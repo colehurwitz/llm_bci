@@ -8,7 +8,7 @@ from accelerate import Accelerator
 from datasets import Dataset, DatasetDict
 from transformers import AutoTokenizer, default_data_collator, get_linear_schedule_with_warmup
 
-from peft import LoraConfig, TaskType
+from peft import LoraConfig
 from peft.utils.other import fsdp_auto_wrap_policy
 
 from bci import BCI
@@ -21,12 +21,13 @@ def main():
     merged_path = "/n/home07/djimenezbeneto/lab/BCI/merged/"
     batch_size = 8
     max_length = 64
-    lr = 1e-3
+    lr = 1e-6
     num_epochs = 1
     data_path = ""
 
     peft_config = LoraConfig(
-        task_type=TaskType.ONLY_LM, inference_mode=False, r=8, lora_alpha=32, lora_dropout=0.1
+        inference_mode=False, r=8, lora_alpha=32, lora_dropout=0.1,
+        target_modules=["q_proj","v_proj","lm_head"]
     )
 
     # Load model with peft adapter for decoder
@@ -40,8 +41,9 @@ def main():
     tokenizer.add_special_tokens(
         {'pad_token': '[PAD]'}
     )
-    model.resize_token_embeddings(len(tokenizer), pad_to_multiple_of=64)
+    model.decoder.resize_token_embeddings(len(tokenizer), pad_to_multiple_of=64)
 
+    print(model)
 
 
     # Dummy dataset for testing
@@ -146,7 +148,7 @@ def main():
         
 
     if accelerator.is_main_process:
-        model.save_adapter(adapter_path)
+        # model.save_adapter(adapter_path)
         model.merge_decoder()
         model.save_pretrained(merged_path)
 

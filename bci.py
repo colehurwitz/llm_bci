@@ -1,15 +1,15 @@
 import os
-from typing import List, Optional, Tuple, Union, Dict, Callable
+from typing import List, Optional, Tuple, Union, Dict
 
 from transformers import LlamaPreTrainedModel
 from transformers import LlamaModel, LlamaConfig
 from transformers.modeling_outputs import CausalLMOutputWithPast
 
-from peft import get_peft_model, PeftModel
-
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+
+from peft_wrapper import PeftModelForBCI, PeftConfig
 
 
 
@@ -83,6 +83,26 @@ class LlamaDecoderWithLMHead(LlamaPreTrainedModel):
             hidden_states=outputs.hidden_states,
             attentions=outputs.attentions,
         )
+    
+
+    ## COMPATIBILITY WITH HF METHODS ## 
+    def get_input_embeddings(self):
+        return self.transformer.embed_tokens
+
+    def set_input_embeddings(self, value):
+        self.transformer.embed_tokens = value
+
+    def get_output_embeddings(self):
+        return self.lm_head
+
+    def set_output_embeddings(self, value):
+        self.lm_head = value
+
+    def get_decoder(self):
+        return self.transformer
+    
+    def set_decoder(self, value):
+        self.transformer = value
 
 
 
@@ -103,26 +123,7 @@ class BCI(LlamaPreTrainedModel):
 
         # init weights
         self.post_init() # from hf
-
-
-    ## COMPATIBILITY WITH HF METHODS ## 
-    def get_input_embeddings(self):
-        return self.decoder.transformer.embed_tokens
-
-    def set_input_embeddings(self, value):
-        self.decoder.transformer.embed_tokens = value
-
-    def get_output_embeddings(self):
-        return self.decoder.lm_head
-
-    def set_output_embeddings(self, new_embeddings):
-        self.decoder.lm_head = new_embeddings
-
-    def set_decoder(self, decoder):
-        self.decoder.transformer = decoder
-
-    def get_decoder(self):
-        return self.decoder.transformer
+        self._init_encoder_weights()
 
 
 
@@ -167,9 +168,7 @@ class BCI(LlamaPreTrainedModel):
             output_hidden_states=output_hidden_states,
             return_dict=return_dict,
         )
-
         logits = outputs[0]
-        print("logits: ", logits.shape)
 
         loss = None
         if labels is not None:
@@ -178,8 +177,7 @@ class BCI(LlamaPreTrainedModel):
             shift_labels = labels[..., 1:].contiguous()
             # Flatten the tokens
             loss_fct = nn.CrossEntropyLoss()
-            # shift_logits = shift_logits.view(-1, self.config.vocab_size)
-            shift_logits = shift_logits.view(-1, 32000)
+            shift_logits = shift_logits.view(-1, self.config.vocab_size)
             shift_labels = shift_labels.view(-1)
             # Enable model parallelism
             shift_labels = shift_labels.to(shift_logits.device)
@@ -196,6 +194,11 @@ class BCI(LlamaPreTrainedModel):
             hidden_states=outputs.hidden_states,
             attentions=outputs.attentions,
         )
+    
+
+
+
+
     
 
 
@@ -216,14 +219,14 @@ class BCI(LlamaPreTrainedModel):
         model = cls.from_pretrained(model_name_or_path)
         
         # Add peft adapter to the decoder
-        model.decoder = get_peft_model(model.decoder, peft_config)
+        model.decoder = PeftModelForBCI(model.decoder, peft_config)
         model._is_peft = True
 
         return model
 
     # Load model with peft adapter
     @classmethod
-    def peft_from_adapter(cls, model_name_or_path, path_to_adapter):
+    def peft_from_adapter(cls, model_name_or_path, path_to_adapter, is_trainable=False, adapter_name = "default"):
 
         # Load pretrained Llama model
         model = cls.from_pretrained(model_name_or_path)
@@ -232,7 +235,11 @@ class BCI(LlamaPreTrainedModel):
         model.encoder.load_state_dict(torch.load(os.path.join(path_to_adapter,"encoder.bin")))
 
         # Load trained adapter for decoder
-        model.decoder = PeftModel.from_pretrained(model.decoder, path_to_adapter)
+        peft_config = PeftConfig.from_pretrained(path_to_adapter)
+        peft_config.inference_mode = not is_trainable
+
+        model.decoder = PeftModelForBCI(model.decoder, peft_config)
+        model.decoder.load_adapter(path_to_adapter, adapter_name, is_trainable=is_trainable)
         model._is_peft = True
 
         return model
@@ -305,5 +312,49 @@ class BCI(LlamaPreTrainedModel):
         std = self.config.initializer_range
 
         for pn, p in self.named_parameters():
+            print(pn)
             if pn == 'encoder.weight':
                 p.data.copy_(torch.eye(self.config.hidden_size))
+
+
+
+    # Override hf method (requirment for generation)
+    def prepare_inputs_for_generation(
+        self, input_ids, past_key_values=None, attention_mask=None, inputs_embeds=None, **kwargs
+    ):
+        if past_key_values is not None:
+            past_length = past_key_values[0][0].shape[2]
+
+            # Some generation methods already pass only the last input ID
+            if input_ids.shape[1] > past_length:
+                remove_prefix_length = past_length
+            else:
+                # Default to old behavior: keep only final ID
+                remove_prefix_length = input_ids.shape[1] - 1
+
+            input_ids = input_ids[:, remove_prefix_length:]
+
+        position_ids = kwargs.get("position_ids", None)
+        if attention_mask is not None and position_ids is None:
+            # create position_ids on the fly for batch generation
+            position_ids = attention_mask.long().cumsum(-1) - 1
+            position_ids.masked_fill_(attention_mask == 0, 1)
+            if past_key_values:
+                position_ids = position_ids[:, -input_ids.shape[1] :]
+
+        # if `inputs_embeds` are passed, we only want to use them in the 1st generation step
+        if inputs_embeds is not None and past_key_values is None:
+            model_inputs = {"inputs_embeds": inputs_embeds}
+        else:
+            model_inputs = {"input_ids": input_ids}
+
+        model_inputs.update(
+            {
+                "position_ids": position_ids,
+                "past_key_values": past_key_values,
+                "use_cache": kwargs.get("use_cache"),
+                "attention_mask": attention_mask,
+            }
+        )
+        return model_inputs
+

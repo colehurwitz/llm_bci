@@ -1,5 +1,5 @@
 Launch script:
-    - accelerate launch --config_file fsdp_config.yaml finetune.py
+    - accelerate launch --config_file deepspeed.yaml finetune.py
 
 
 Loading:
@@ -20,14 +20,11 @@ NEW FILES
     - bci: contains the Encoder and Decoder models 
     - finetune: script for finetuning BCI model
     - inference: script to test inference on BCI model
-    - change_prefix: script to manipulate state_dict keys
+    - change_prefix: script to adapt llama2 state_dict to BCI state_dict
     - fsdp_config.yaml: accelerate config for distributed training
 
 CHANGES
-    - peft/mapping.py to add PeftModelForOnlyLM to the Mapping dict
-    - peft/peft_model.oy to add PeftModelForOnlyLM which is PeftModelForCausalLM without the labels
-    - peft/utils/peft_types.py to add OnlyLM to TaskTypes
-    - pretrained llama model state dict to match the new model architecture
+    - adapted pretrained llama2 model state dict to match the new model architecture
 
 
 
@@ -37,6 +34,8 @@ OBS
 - The transformer part of the decoder cannot be named model as in the original code because modules 
 wrapped in peft have an attribute "model" that references the unwrapped model, so we would have to add
 logic to call decoder.model.model only when the peft adapter is loaded
+- Probably this is the same problem that causes resize_token_embeddings to fail when called on BCI model
+instead of on the decoder
 - _init_weights is called by hf whenever a key for a parameter is not found in the state_dict and when 
 resizing the embedding and lm_head after adding tokens to the vocabulary
 - the peft model class forces the signature of the underlying model to contain "labels", because it is 
@@ -48,9 +47,3 @@ BCI architecture
 ARCHITECTURE
 - Encoder: data embedding + transformer encoder
 - Decoder: llama decoder + llama lm_head
-
-
-
-TO DO:
-- Try distributed training with DeepSpeed
-- Try if full precision model fits in 1 GPU

@@ -27,11 +27,13 @@ def main():
 
     peft_config = LoraConfig(
         inference_mode=False, r=8, lora_alpha=32, lora_dropout=0.1,
-        target_modules=["q_proj","v_proj","lm_head"]
+        target_modules=["q_proj","v_proj","gate_proj"]
     )
 
     # Load model with peft adapter for decoder
-    model = BCI.peft_from_pretrained(model_name_or_path, peft_config)
+    model = BCI.peft_from_pretrained(model_name_or_path, peft_config)    
+    model._init_encoder_weights()
+    print("Encoder weight: ", model.encoder.fc.weight.data)
     accelerator.print(f"Encoder params: {sum(p.numel() for p in model.encoder.parameters() if p.requires_grad):,}")
     accelerator.print("Decoder: ")
     model.decoder.print_trainable_parameters()
@@ -148,7 +150,7 @@ def main():
         
 
     if accelerator.is_main_process:
-        # model.save_adapter(adapter_path)
+        model.save_adapter(adapter_path)
         model.merge_decoder()
         model.save_pretrained(merged_path)
 

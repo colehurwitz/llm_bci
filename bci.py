@@ -123,7 +123,6 @@ class BCI(LlamaPreTrainedModel):
 
         # init weights
         self.post_init() # from hf
-        self._init_encoder_weights()
 
 
 
@@ -209,6 +208,7 @@ class BCI(LlamaPreTrainedModel):
     def from_pretrained(cls, model_name_or_path, *args, **kwargs):
         model = super().from_pretrained(model_name_or_path, *args, **kwargs)
         model._is_peft = False
+
         return model
 
     # Instantiate model with peft adapter
@@ -221,6 +221,7 @@ class BCI(LlamaPreTrainedModel):
         # Add peft adapter to the decoder
         model.decoder = PeftModelForBCI(model.decoder, peft_config)
         model._is_peft = True
+
 
         return model
 
@@ -296,7 +297,6 @@ class BCI(LlamaPreTrainedModel):
         # All copied from Llama
         std = self.config.initializer_range
         if isinstance(module, nn.Linear):
-            print(module)
             module.weight.data.normal_(mean=0.0,std=std)
             if module.bias is not None:
                 module.bias.data.zero_()
@@ -308,12 +308,10 @@ class BCI(LlamaPreTrainedModel):
     
     # Another way of accessing the initialization of weights
     def _init_encoder_weights(self):
-
         std = self.config.initializer_range
-
         for pn, p in self.named_parameters():
-            print(pn)
-            if pn == 'encoder.weight':
+            if pn == 'encoder.fc.weight':
+                print("Initialized encoder to identity")
                 p.data.copy_(torch.eye(self.config.hidden_size))
 
 

@@ -1,6 +1,8 @@
-Launch script:
+Launch finetuning script:
     - accelerate launch --config_file deepspeed.yaml finetune.py
 
+Launch inference script:
+    - python inference.py 
 
 Loading:
     - From pretrained Llama and create adapter: peft_from_pretrained
@@ -31,6 +33,11 @@ CHANGES
 
 
 OBS
+- We may need to add the Encoder or EncoderLayer to the no split module if there are any kind of residual connections,
+this is to ensure that all the tensors are in the same rank for every operation in the module
+- hf from_pretrained has the name/directory as args, *model_args to pass to the model __init__ method, and all the rest are **kwargs
+hf save_pretrained has directory as arg and all the rest are **kwargs. peft load_adapter as directory and adapter name as args, and all the rest are **kwargs. 
+We only need to take care of the is_trainable kwarg, so no more kwargs are passed.
 - The transformer part of the decoder cannot be named model as in the original code because modules 
 wrapped in peft have an attribute "model" that references the unwrapped model, so we would have to add
 logic to call decoder.model.model only when the peft adapter is loaded

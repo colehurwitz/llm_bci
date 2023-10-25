@@ -114,6 +114,7 @@ class BCI(LlamaPreTrainedModel):
     
 
         # Configuration
+        _no_split_modules = ["LlamaDecoderLayer"]  # Override llama default because we may want to add the encoder or the encoder layer module here
         self.vocab_size = config.vocab_size
         self._is_peft = False
 
@@ -203,20 +204,20 @@ class BCI(LlamaPreTrainedModel):
 
     ## LOADING METHODS ##
 
-    # Override from_pretrained method 
+    # Override from_pretrained method to set _is_peft
     @classmethod
-    def from_pretrained(cls, model_name_or_path, *args, **kwargs):
-        model = super().from_pretrained(model_name_or_path, *args, **kwargs)
+    def from_pretrained(cls, model_name_or_path, *model_args, **kwargs):
+        model = super().from_pretrained(model_name_or_path, *model_args, **kwargs)
         model._is_peft = False
 
         return model
 
-    # Instantiate model with peft adapter
+    # Load pertrained model and create peft adapter
     @classmethod
-    def peft_from_pretrained(cls, model_name_or_path, peft_config):
+    def peft_from_pretrained(cls, model_name_or_path, peft_config, *model_args, **kwargs):
 
         # Create BCI model and load Llama2 weights to decoder and lm_head
-        model = cls.from_pretrained(model_name_or_path)
+        model = cls.from_pretrained(model_name_or_path, *model_args, **kwargs)
         
         # Add peft adapter to the decoder
         model.decoder = PeftModelForBCI(model.decoder, peft_config)
@@ -225,20 +226,21 @@ class BCI(LlamaPreTrainedModel):
 
         return model
 
-    # Load model with peft adapter
+    # Load pretrained adapter
     @classmethod
-    def peft_from_adapter(cls, model_name_or_path, path_to_adapter, is_trainable=False, adapter_name = "default"):
+    def peft_from_adapter(cls, model_name_or_path, path_to_adapter, is_trainable=False, adapter_name = "default", *args, **kwargs):
 
         # Load pretrained Llama model
-        model = cls.from_pretrained(model_name_or_path)
+        model = cls.from_pretrained(model_name_or_path, *args, **kwargs)
 
         # Load trained weights for encoder
         model.encoder.load_state_dict(torch.load(os.path.join(path_to_adapter,"encoder.bin")))
 
-        # Load trained adapter for decoder
+        # Get peft config
         peft_config = PeftConfig.from_pretrained(path_to_adapter)
         peft_config.inference_mode = not is_trainable
 
+        # Load trained adapter for decoder
         model.decoder = PeftModelForBCI(model.decoder, peft_config)
         model.decoder.load_adapter(path_to_adapter, adapter_name, is_trainable=is_trainable)
         model._is_peft = True
@@ -256,7 +258,7 @@ class BCI(LlamaPreTrainedModel):
 
 
     # Save trained model and adapter
-    def save_adapter(self, path_to_adapter):
+    def save_adapter(self, path_to_adapter, **kwargs):
         
         if not self._is_peft:
             raise Exception("No peft adapter, model was not saved")
@@ -266,7 +268,7 @@ class BCI(LlamaPreTrainedModel):
         
         # Save state all parameters of encoder and save decoder adapter
         torch.save(self.encoder.state_dict(), os.path.join(path_to_adapter,"encoder.bin"))
-        self.decoder.save_pretrained(path_to_adapter)
+        self.decoder.save_pretrained(path_to_adapter, **kwargs)
 
 
     ## ADAPTER METHODS ##

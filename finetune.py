@@ -45,7 +45,7 @@ def main():
     )
     model.decoder.resize_token_embeddings(len(tokenizer), pad_to_multiple_of=64)
 
-    print(model)
+    accelerator.print(model)
 
 
     # Dummy dataset for testing

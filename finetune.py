@@ -21,13 +21,10 @@ def main():
     adapter_path = "/n/home07/djimenezbeneto/lab/BCI/peft/"
     merged_path = "/n/home07/djimenezbeneto/lab/BCI/merged/"
     
-    proc_data_path = "/n/home07/djimenezbeneto/lab/datasets/BCI/data/processed.data"
-    feature = "tx1"
-    split = "train"
-    prompt = "This is a conversation: "
+    proc_data_path = "/n/home07/djimenezbeneto/lab/datasets/BCI/processed.data"
     
     batch_size = 1
-    lr = 1e-6
+    lr = 3e-4
     num_epochs = 1
 
     peft_config = LoraConfig(
@@ -38,8 +35,6 @@ def main():
 
     # Load model with peft adapter for decoder
     model = BCI.peft_from_pretrained(model_name_or_path, peft_config)    
-    model._init_encoder_weights()
-    print("Encoder weight: ", model.encoder.fc.weight.data)
     accelerator.print(f"Encoder params: {sum(p.numel() for p in model.encoder.parameters() if p.requires_grad):,}")
     accelerator.print("Decoder: ")
     model.decoder.print_trainable_parameters()
@@ -59,8 +54,8 @@ def main():
 
     # Load preprocessed dataset
     data = torch.load(proc_data_path)
-    train_dataset = BCIDataset(data["train"])
-    test_dataset = BCIDataset(data["test"])
+    train_dataset = BCIDataset(data["train"]["model_inputs"])
+    test_dataset = BCIDataset(data["test"]["model_inputs"])
 
     train_dataloader = DataLoader(
         train_dataset, shuffle=True, collate_fn=partial(pad_collate_fn,pad_id), batch_size=batch_size, pin_memory=True
@@ -72,6 +67,10 @@ def main():
 
     # Setup optimizer
     optimizer = torch.optim.AdamW(model.parameters(), lr=lr)
+    # for pn, p in model.named_parameters():
+    #     if p.requires_grad:
+    #         print(pn)
+
     lr_scheduler = get_linear_schedule_with_warmup(
         optimizer=optimizer,
         num_warmup_steps=0,
@@ -84,8 +83,8 @@ def main():
         print("\n\n\n\nUsing FSDP\n\n\n\n")
         accelerator.state.fsdp_plugin.auto_wrap_policy = fsdp_auto_wrap_policy(model)
 
-    model, train_dataloader, eval_dataloader, optimizer, lr_scheduler = accelerator.prepare(
-        model, train_dataloader, eval_dataloader, optimizer, lr_scheduler
+    model, train_dataloader, test_dataloader, optimizer, lr_scheduler = accelerator.prepare(
+        model, train_dataloader, test_dataloader, optimizer, lr_scheduler
     )
 
 
@@ -104,24 +103,24 @@ def main():
             optimizer.zero_grad()
 
         model.eval()
-        eval_loss = 0
-        eval_preds = []
-        for step, batch in enumerate(tqdm(eval_dataloader)):
+        test_loss = 0
+        test_preds = []
+        for step, batch in enumerate(tqdm(test_dataloader)):
             with torch.no_grad():
                 outputs = model(**batch)
             loss = outputs.loss
-            eval_loss += loss.detach().float()
+            test_loss += loss.detach().float()
             preds = accelerator.gather_for_metrics(torch.argmax(outputs.logits, -1)).detach().cpu().numpy()
-            eval_preds.extend(tokenizer.batch_decode(preds, skip_special_tokens=True))
-        eval_epoch_loss = eval_loss / len(eval_dataloader)
-        eval_ppl = torch.exp(eval_epoch_loss)
+            test_preds.extend(tokenizer.batch_decode(preds, skip_special_tokens=True))
+        test_epoch_loss = test_loss / len(test_dataloader)
+        test_ppl = torch.exp(test_epoch_loss)
         train_epoch_loss = total_loss / len(train_dataloader)
         train_ppl = torch.exp(train_epoch_loss)
-        accelerator.print(f"{epoch=}: {train_ppl=} {train_epoch_loss=} {eval_ppl=} {eval_epoch_loss=}")
+        accelerator.print(f"{epoch=}: {train_ppl=} {train_epoch_loss=} {test_ppl=} {test_epoch_loss=}")
 
 
-        accelerator.print(f"{eval_preds[:10]=}")
-        accelerator.print(f"{dataset['validation']['inputs'][:10]=}")
+        accelerator.print(f"{test_preds[:10]=}")
+        accelerator.print(f"{test_dataset['input_ids'][:10]=}")
         accelerator.wait_for_everyone()
         
 

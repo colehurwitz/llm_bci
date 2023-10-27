@@ -30,12 +30,13 @@ def pad_collate_fn(pad_id, batch):
     # Batch nodes and edges
     max_seq_len = max([len(batch[i]["input_ids"]) for i in range(len(batch))])
     max_fea_len = max([len(batch[i]["features"]) for i in range(len(batch))])
+    
 
     for i in range(len(batch)):
         pad_seq_len = max_seq_len - len(batch[i]["input_ids"])
-        pad_seq = torch.ones(pad_seq_len, dtype=torch.int)*pad_id
+        pad_seq = torch.ones(pad_seq_len, dtype=batch[i]["input_ids"].dtype)*pad_id
         mask_seq = torch.zeros(pad_seq_len)
-        mask_lab = torch.ones(pad_seq_len) * (-100)
+        mask_lab = torch.ones(pad_seq_len, dtype=batch[i]["labels"].dtype) * (-100)
         pad_fea_len = max_fea_len - len(batch[i]["features"])
         pad_fea = torch.zeros(pad_fea_len, len(batch[i]["features"][0]))
         mask_fea = torch.ones(max_fea_len)
@@ -47,6 +48,7 @@ def pad_collate_fn(pad_id, batch):
         padded_batch["features"].append(torch.cat((pad_fea, batch[i]["features"]), -2))
         padded_batch["feature_mask"].append(mask_fea)
 
+    padded_batch = {key: torch.stack(padded_batch[key]) for key in padded_batch}
 
     return padded_batch
         

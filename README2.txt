@@ -31,7 +31,7 @@ CHANGES
 
 TO DO
 -Talk about which part of the model is under LORA
-
+-Using higher lr for encoder and lower for decoder?
 
 OBS
 - We may need to add the Encoder or EncoderLayer to the no split module of llama if there are any kind of residual connections,

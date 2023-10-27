@@ -20,6 +20,7 @@ class Encoder(nn.Module):
         super().__init__()
 
         self.fc = nn.Linear(256, config.hidden_size)
+        # self.fc2 = nn.Linear(config.hid, config.hidden_size)
 
     def forward(self, x):
         return self.fc(x)
@@ -155,12 +156,13 @@ class BCI(LlamaPreTrainedModel):
         sentence_embeds = self.decoder.transformer.embed_tokens(input_ids)
 
         # Embed neural signal
-        neural_embeds = self.encoder(features, feature_mask)
+        neural_embeds = self.encoder(features)
 
         # Forward dummy module (should be encoder from data to hidden_size)
-        inputs_embeds = torch.cat((neural_embeds, sentence_embeds), -1)
+        inputs_embeds = torch.cat((neural_embeds, sentence_embeds), -2)
         attention_mask = torch.cat((feature_mask, attention_mask), -1)
-        labels = torch.cat((torch.ones_like(neural_embeds)*(-100), labels), -1)
+        labels = torch.cat((torch.ones_like(feature_mask, dtype=int)*(-100), labels), -1)
+
 
         outputs = self.decoder(
             input_ids=None,         # Inputs are already embedded, passed in input_embeds
@@ -316,9 +318,7 @@ class BCI(LlamaPreTrainedModel):
         std = self.config.initializer_range
         for pn, p in self.named_parameters():
             if pn == 'encoder.fc.weight':
-                print("Initialized encoder to identity")
-                p.data.copy_(torch.eye(self.config.hidden_size))
-
+                pass
 
 
     # Override hf method (requirment for generation)

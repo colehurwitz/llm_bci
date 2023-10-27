@@ -20,15 +20,15 @@ def get_split_dict(split_dir, feature="tx1"):
     for file in tqdm(all_files):
         data = scipy.io.loadmat(file)
         x_i = data[feature][0]
-        y_i = data["sentenceText"] if "sentenceText" in data else np.array([""]*len(x_i),dtype=str)
+        y_i = data["sentenceText"] 
         x.append(x_i)
         y.append(y_i)
     x = np.concatenate(x).tolist()
     y = np.concatenate(y)
 
     return {
-        "features":  x[:20],   
-        "sentences": y[:20],
+        "features":  x,   
+        "sentences": y,
     }
     
 
@@ -37,28 +37,31 @@ def load_dataset_dict(data_dir, feature="tx1", split="train"):
 
     if split == "train":
 
-        # print("Loading train data...")
-        # train_dir = os.path.join(data_dir, "competitionData/train/")
-        # train_dict = get_split_dict(train_dir, feature)
+        print("Loading train data...")
+        train_dir = os.path.join(data_dir, "competitionData/train/")
+        train_dict = get_split_dict(train_dir, feature)
 
         print("Loading test data...")
         test_dir = os.path.join(data_dir, "competitionData/test/")
         test_dict = get_split_dict(test_dir, feature)
 
         return {
-                "train": test_dict,
-                "test":  test_dict,
-                }
-
-        return {
                 "train": train_dict,
                 "test":  test_dict,
                 }
-    
-    elif split == "eval": 
+
+    elif split == "test": 
         print("Loading test data...")
+        test_dir = os.path.join(data_dir, "competitionData/test/")
+        test_dict = get_split_dict(test_dir, feature)
+        return {
+                "test": test_dict,
+                }
+
+    elif split == "heldout": 
+        print("Loading heldout data...")
         heldout_dir = os.path.join(data_dir, "competitionData/competitionHoldOut/")
-        heldout_dicr = get_split_dict(heldout_dir, feature)
+        heldout_dict = get_split_dict(heldout_dir, feature)
         return {
                 "heldout": heldout_dict,
                 }
@@ -97,27 +100,39 @@ def preprocess_function(examples, tokenizer, prompt = ""):
         model_inputs["labels"] = labels
         
         # Neural signal. Conver to torch tensors
-        model_inputs["features"] = [torch.tensor(row) for  row in examples['features'] ]
+        model_inputs["features"] = [torch.tensor(row, dtype=torch.int64) for  row in examples['features'] ]
 
         # print(model_inputs["features"][0])
         # print(model_inputs["input_ids"][0])
         # print(model_inputs["labels"][0])
         # print(model_inputs["attention_mask"][0])
-        return model_inputs
+
+        # Keep to evaluate infenrence
+        eval = {}
+        eval["sentences"] = sentences
+        eval["prompt_inputs"] = prompt_inputs
+        return {
+            "model_inputs": model_inputs,
+            "eval": eval
+        }
 
 
 
 from transformers import AutoTokenizer
 from functools import partial
 
-data_dir = "/home/gridsan/dbeneto/MAML-Soljacic_shared/BCI/data"
-model_path = "/home/gridsan/dbeneto/MAML-Soljacic_shared/BCI/llama2-7b"
-proc_path = "/home/gridsan/dbeneto/MAML-Soljacic_shared/BCI/data/processed.data"
+data_dir = "/n/home07/djimenezbeneto/lab/datasets/BCI"
+model_path = "/n/home07/djimenezbeneto/lab/models/BCI"
+proc_path = "/n/home07/djimenezbeneto/lab/datasets/BCI/processed.data"
+
+prompt = ""
+feature="tx1"
+split="train"
+
 
 tokenizer = AutoTokenizer.from_pretrained(model_path)
-prompt = ""
 
-ds = load_dataset_dict(data_dir)
+ds = load_dataset_dict(data_dir, feature=feature, split=split)
 proc_ds = {
         split: preprocess_function(ds[split], tokenizer, prompt=prompt) 
     for split in ds}

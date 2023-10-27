@@ -1,34 +1,40 @@
-from copy import deepcopy
+from functools import partial
 from tqdm import tqdm
 
 import torch
 from torch.utils.data import DataLoader
 
 from accelerate import Accelerator
-from datasets import Dataset, DatasetDict
-from transformers import AutoTokenizer, default_data_collator, get_linear_schedule_with_warmup
+from datasets import load_from_disk
+from transformers import AutoTokenizer, get_linear_schedule_with_warmup
 
 from peft import LoraConfig
 from peft.utils.other import fsdp_auto_wrap_policy
 
-from bci import BCI
 
+from bci import BCI
+from data_utils import BCIDataset, pad_collate_fn
 
 def main():
     accelerator = Accelerator()
     model_name_or_path = "/n/home07/djimenezbeneto/lab/models/BCI"
     adapter_path = "/n/home07/djimenezbeneto/lab/BCI/peft/"
     merged_path = "/n/home07/djimenezbeneto/lab/BCI/merged/"
-    batch_size = 8
-    max_length = 64
+    
+    proc_data_path = "/n/home07/djimenezbeneto/lab/datasets/BCI/data/processed.data"
+    feature = "tx1"
+    split = "train"
+    prompt = "This is a conversation: "
+    
+    batch_size = 1
     lr = 1e-6
     num_epochs = 1
-    data_path = ""
 
     peft_config = LoraConfig(
         inference_mode=False, r=8, lora_alpha=32, lora_dropout=0.1,
         target_modules=["q_proj","v_proj","gate_proj"]
     )
+    
 
     # Load model with peft adapter for decoder
     model = BCI.peft_from_pretrained(model_name_or_path, peft_config)    
@@ -38,50 +44,29 @@ def main():
     accelerator.print("Decoder: ")
     model.decoder.print_trainable_parameters()
 
-    tokenizer = AutoTokenizer.from_pretrained(model_name_or_path)
+
+    tokenizer = AutoTokenizer.from_pretrained(model_name_or_path, padding_side='right')
     # Llama was pretrained without a pad token, we have to manually add it for fine-tuning
     tokenizer.add_special_tokens(
         {'pad_token': '[PAD]'}
     )
+    pad_id = tokenizer.pad_token_id
     model.decoder.resize_token_embeddings(len(tokenizer), pad_to_multiple_of=64)
 
-    accelerator.print(model)
+    # accelerator.print(model)
 
 
-    # Dummy dataset for testing
-    dataset = DatasetDict({"train": Dataset.from_dict({'inputs': ["i am an example"]*16}) ,
-                           "validation": Dataset.from_dict({'inputs': ["i am an example"]*16}) 
-                        })
-    
-    def preprocess_function(examples):
-        inputs = examples['inputs']
-        model_inputs = tokenizer(
-            inputs, max_length=max_length, padding="max_length", truncation=True, return_tensors="pt"
-        )
-        
-        labels = deepcopy(model_inputs["input_ids"])
-        labels[labels == tokenizer.pad_token_id] = -100
-        model_inputs["labels"] = labels
-        
-        return model_inputs
 
-    with accelerator.main_process_first():
-        processed_datasets = dataset.map(
-            preprocess_function,
-            batched=True,
-            num_proc=1,
-            desc="Running tokenizer on dataset",
-        )
-
-
-    train_dataset = processed_datasets["train"]
-    eval_dataset = processed_datasets["validation"]
+    # Load preprocessed dataset
+    data = torch.load(proc_data_path)
+    train_dataset = BCIDataset(data["train"])
+    test_dataset = BCIDataset(data["test"])
 
     train_dataloader = DataLoader(
-        train_dataset, shuffle=True, collate_fn=default_data_collator, batch_size=batch_size, pin_memory=True
+        train_dataset, shuffle=True, collate_fn=partial(pad_collate_fn,pad_id), batch_size=batch_size, pin_memory=True
     )
-    eval_dataloader = DataLoader(
-        eval_dataset, collate_fn=default_data_collator, batch_size=batch_size, pin_memory=True
+    test_dataloader = DataLoader(
+        test_dataset, collate_fn=partial(pad_collate_fn,pad_id), batch_size=batch_size, pin_memory=True
     )
 
 
@@ -96,14 +81,12 @@ def main():
 
     # Prepare model for distributed training
     if getattr(accelerator.state, "fsdp_plugin", None) is not None:
+        print("\n\n\n\nUsing FSDP\n\n\n\n")
         accelerator.state.fsdp_plugin.auto_wrap_policy = fsdp_auto_wrap_policy(model)
 
     model, train_dataloader, eval_dataloader, optimizer, lr_scheduler = accelerator.prepare(
         model, train_dataloader, eval_dataloader, optimizer, lr_scheduler
     )
-
-
-    # accelerator.print(model)
 
 
     # Train
@@ -136,21 +119,13 @@ def main():
         train_ppl = torch.exp(train_epoch_loss)
         accelerator.print(f"{epoch=}: {train_ppl=} {train_epoch_loss=} {eval_ppl=} {eval_epoch_loss=}")
 
-        correct = 0
-        total = 0
-        for pred, true in zip(eval_preds, dataset["validation"]['inputs']):
-            if pred.strip() == true.strip():
-                correct += 1
-            total += 1
-        accuracy = correct / total * 100
-        accelerator.print(f"{accuracy=}")
+
         accelerator.print(f"{eval_preds[:10]=}")
         accelerator.print(f"{dataset['validation']['inputs'][:10]=}")
         accelerator.wait_for_everyone()
         
 
     if accelerator.is_main_process:
-        model.save_adapter(adapter_path)
         model.merge_decoder()
         model.save_pretrained(merged_path)
 

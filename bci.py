@@ -19,7 +19,7 @@ class Encoder(nn.Module):
     def __init__(self, config: LlamaConfig):
         super().__init__()
 
-        self.fc = nn.Linear(config.hidden_size, config.hidden_size)
+        self.fc = nn.Linear(256, config.hidden_size)
 
     def forward(self, x):
         return self.fc(x)
@@ -129,8 +129,10 @@ class BCI(LlamaPreTrainedModel):
 
     def forward(
             self,
-            input_ids: torch.LongTensor = None,
-            attention_mask: Optional[torch.Tensor] = None,
+            features: torch.LongTensor,
+            feature_mask: torch.Tensor,
+            input_ids: torch.LongTensor,
+            attention_mask: torch.Tensor,
             position_ids: Optional[torch.LongTensor] = None,
             past_key_values: Optional[List[torch.FloatTensor]] = None,
             labels: Optional[torch.LongTensor] = None,
@@ -149,19 +151,20 @@ class BCI(LlamaPreTrainedModel):
         return_dict = return_dict if return_dict is not None else self.config.use_return_dict
 
 
-        # Embed tokens (for testing with text)
-        inputs_embeds = self.decoder.transformer.embed_tokens(input_ids)
+        # Embed tokens of sentence
+        sentence_embeds = self.decoder.transformer.embed_tokens(input_ids)
 
+        # Embed neural signal
+        neural_embeds = self.encoder(features, feature_mask)
 
         # Forward dummy module (should be encoder from data to hidden_size)
-        inputs_embeds = self.encoder(inputs_embeds)
-
+        inputs_embeds = torch.cat((neural_embeds, sentence_embeds), -1)
+        attention_mask = torch.cat((feature_mask, attention_mask), -1)
+        labels = torch.cat((torch.ones_like(neural_embeds)*(-100), labels), -1)
 
         outputs = self.decoder(
             input_ids=None,         # Inputs are already embedded, passed in input_embeds
             attention_mask=attention_mask,
-            position_ids=position_ids,
-            past_key_values=past_key_values,
             inputs_embeds=inputs_embeds,
             use_cache=use_cache,
             output_attentions=output_attentions,

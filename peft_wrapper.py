@@ -1,3 +1,5 @@
+import torch
+
 from peft import PeftModel, PeftConfig
 
 # Peft wrapper that is compatible with models without LM head
@@ -19,25 +21,12 @@ class PeftModelForBCI(PeftModel):
         self.base_model_prepare_inputs_for_generation = self.base_model.prepare_inputs_for_generation
 
     def forward(
-        self,
-        input_ids=None,
-        attention_mask=None,
-        inputs_embeds=None,
-        output_attentions=None,
-        output_hidden_states=None,
-        return_dict=None,
-        task_ids=None,
-        **kwargs,
-    ):
-        peft_config = self.active_peft_config
-        if not peft_config.is_prompt_learning:
+            self,
+            inputs_embeds: torch.FloatTensor,
+            attention_mask: torch.FloatTensor,
+        ) -> torch.FloatTensor:
 
-            return self.base_model(
-                input_ids=input_ids,
-                attention_mask=attention_mask,
-                inputs_embeds=inputs_embeds,
-                output_attentions=output_attentions,
-                output_hidden_states=output_hidden_states,
-                return_dict=return_dict,
-                **kwargs,
-            )
+        return self.base_model(
+            inputs_embeds=inputs_embeds,
+            attention_mask=attention_mask,
+        )

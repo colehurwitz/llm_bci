@@ -104,14 +104,14 @@ def main():
 
         model.eval()
         test_loss = 0
-        test_preds = []
+        # test_preds = []
         for step, batch in enumerate(tqdm(test_dataloader)):
             with torch.no_grad():
                 outputs = model(**batch)
             loss = outputs.loss
             test_loss += loss.detach().float()
-            preds = accelerator.gather_for_metrics(torch.argmax(outputs.logits, -1)).detach().cpu().numpy()
-            test_preds.extend(tokenizer.batch_decode(preds, skip_special_tokens=True))
+            # preds = accelerator.gather_for_metrics(torch.argmax(outputs.logits, -1)).detach().cpu().numpy()
+            # test_preds.extend(tokenizer.batch_decode(preds, skip_special_tokens=True))
         test_epoch_loss = test_loss / len(test_dataloader)
         test_ppl = torch.exp(test_epoch_loss)
         train_epoch_loss = total_loss / len(train_dataloader)
@@ -119,8 +119,6 @@ def main():
         accelerator.print(f"{epoch=}: {train_ppl=} {train_epoch_loss=} {test_ppl=} {test_epoch_loss=}")
 
 
-        accelerator.print(f"{test_preds[:10]=}")
-        accelerator.print(f"{test_dataset['input_ids'][:10]=}")
         accelerator.wait_for_everyone()
         
 

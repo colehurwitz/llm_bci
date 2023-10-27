@@ -1,5 +1,5 @@
 import os
-from typing import List, Optional, Tuple, Union, Dict
+from typing import List, Optional, Tuple, Dict
 
 from transformers import LlamaPreTrainedModel
 from transformers import LlamaModel, LlamaConfig
@@ -20,10 +20,13 @@ class Encoder(nn.Module):
         super().__init__()
 
         self.fc = nn.Linear(256, config.hidden_size)
-        # self.fc2 = nn.Linear(config.hid, config.hidden_size)
 
-    def forward(self, x):
-        return self.fc(x)
+    def forward(
+            self, 
+            features: torch.FloatTensor,
+        ):
+
+        return self.fc(features)
     
 
 # Wrap transformer and lm_head of Llama
@@ -39,51 +42,23 @@ class LlamaDecoderWithLMHead(LlamaPreTrainedModel):
         
     def forward(
             self,
-            input_ids: torch.LongTensor = None,
-            attention_mask: Optional[torch.Tensor] = None,
-            position_ids: Optional[torch.LongTensor] = None,
-            past_key_values: Optional[List[torch.FloatTensor]] = None,
-            inputs_embeds: Optional[torch.FloatTensor] = None,
-            use_cache: Optional[bool] = None,
-            output_attentions: Optional[bool] = None,
-            output_hidden_states: Optional[bool] = None,
-            return_dict: Optional[bool] = None,
-        ) -> Union[Tuple,Dict]:
+            inputs_embeds: torch.FloatTensor,
+            attention_mask: torch.FloatTensor,
+
+        ) -> torch.FloatTensor:
 
 
         # decoder outputs consists of (dec_features, layer_state, dec_hidden, dec_attn)
-        outputs = self.transformer(
-            input_ids=input_ids,      
+        outputs = self.transformer(  
+            inputs_embeds=inputs_embeds, 
             attention_mask=attention_mask,
-            position_ids=position_ids,
-            past_key_values=past_key_values,
-            inputs_embeds=inputs_embeds,
-            use_cache=use_cache,
-            output_attentions=output_attentions,
-            output_hidden_states=output_hidden_states,
-            return_dict=return_dict,
         )
 
         hidden_states = outputs[0]
-        if self.config.pretraining_tp > 1:
-            lm_head_slices = self.lm_head.weight.split(self.vocab_size // self.config.pretraining_tp, dim=0)
-            logits = [F.linear(hidden_states, lm_head_slices[i]) for i in range(self.config.pretraining_tp)]
-            logits = torch.cat(logits, dim=-1)
-        else:
-            logits = self.lm_head(hidden_states)
+        logits = self.lm_head(hidden_states)
         logits = logits.float()
 
-
-        if not return_dict:
-            output = (logits,) + outputs[1:]
-            return output
-
-        return CausalLMOutputWithPast(
-            logits=logits,
-            past_key_values=outputs.past_key_values,
-            hidden_states=outputs.hidden_states,
-            attentions=outputs.attentions,
-        )
+        return logits
     
 
     ## COMPATIBILITY WITH HF METHODS ## 
@@ -130,53 +105,37 @@ class BCI(LlamaPreTrainedModel):
 
     def forward(
             self,
-            features: torch.LongTensor,
-            feature_mask: torch.Tensor,
             input_ids: torch.LongTensor,
-            attention_mask: torch.Tensor,
-            position_ids: Optional[torch.LongTensor] = None,
-            past_key_values: Optional[List[torch.FloatTensor]] = None,
+            attention_mask: torch.FloatTensor,
+            features: torch.FloatTensor,
+            feature_mask: torch.FloatTensor,
             labels: Optional[torch.LongTensor] = None,
-            use_cache: Optional[bool] = None,
-            output_attentions: Optional[bool] = None,
-            output_hidden_states: Optional[bool] = None,
-            return_dict: Optional[bool] = None,
-        ) -> Union[Tuple,Dict]:
+            **kwargs, # added for compatibility with hf model.generate
+
+        ) -> CausalLMOutputWithPast:
 
  
-        # Config for output
-        output_attentions = output_attentions if output_attentions is not None else self.config.output_attentions
-        output_hidden_states = (
-            output_hidden_states if output_hidden_states is not None else self.config.output_hidden_states
-        )
-        return_dict = return_dict if return_dict is not None else self.config.use_return_dict
-
-
         # Embed tokens of sentence
         sentence_embeds = self.decoder.transformer.embed_tokens(input_ids)
 
         # Embed neural signal
         neural_embeds = self.encoder(features)
 
-        # Forward dummy module (should be encoder from data to hidden_size)
+        # Prepare inputs for decoder
         inputs_embeds = torch.cat((neural_embeds, sentence_embeds), -2)
         attention_mask = torch.cat((feature_mask, attention_mask), -1)
-        labels = torch.cat((torch.ones_like(feature_mask, dtype=int)*(-100), labels), -1)
 
-
-        outputs = self.decoder(
-            input_ids=None,         # Inputs are already embedded, passed in input_embeds
-            attention_mask=attention_mask,
+        # Forward decoder
+        logits = self.decoder(  
             inputs_embeds=inputs_embeds,
-            use_cache=use_cache,
-            output_attentions=output_attentions,
-            output_hidden_states=output_hidden_states,
-            return_dict=return_dict,
+            attention_mask=attention_mask,
         )
-        logits = outputs[0]
-
+        
         loss = None
         if labels is not None:
+            # Add features mask to match sizes
+            labels = torch.cat((torch.ones_like(feature_mask, dtype=labels.dtype)*(-100), labels), -1)
+
             # Shift so that tokens < n predict n
             shift_logits = logits[..., :-1, :].contiguous()
             shift_labels = labels[..., 1:].contiguous()
@@ -188,22 +147,11 @@ class BCI(LlamaPreTrainedModel):
             shift_labels = shift_labels.to(shift_logits.device)
             loss = loss_fct(shift_logits, shift_labels)
 
-        if not return_dict:
-            output = (logits,) + outputs[1:]
-            return (loss,) + output if loss is not None else output
-
+        
         return CausalLMOutputWithPast(
             loss=loss,
             logits=logits,
-            past_key_values=outputs.past_key_values,
-            hidden_states=outputs.hidden_states,
-            attentions=outputs.attentions,
         )
-    
-
-
-
-
     
 
 
@@ -323,41 +271,15 @@ class BCI(LlamaPreTrainedModel):
 
     # Override hf method (requirment for generation)
     def prepare_inputs_for_generation(
-        self, input_ids, past_key_values=None, attention_mask=None, inputs_embeds=None, **kwargs
+        self, input_ids, attention_mask, features, feature_mask, **kwargs
     ):
-        if past_key_values is not None:
-            past_length = past_key_values[0][0].shape[2]
-
-            # Some generation methods already pass only the last input ID
-            if input_ids.shape[1] > past_length:
-                remove_prefix_length = past_length
-            else:
-                # Default to old behavior: keep only final ID
-                remove_prefix_length = input_ids.shape[1] - 1
-
-            input_ids = input_ids[:, remove_prefix_length:]
-
-        position_ids = kwargs.get("position_ids", None)
-        if attention_mask is not None and position_ids is None:
-            # create position_ids on the fly for batch generation
-            position_ids = attention_mask.long().cumsum(-1) - 1
-            position_ids.masked_fill_(attention_mask == 0, 1)
-            if past_key_values:
-                position_ids = position_ids[:, -input_ids.shape[1] :]
-
-        # if `inputs_embeds` are passed, we only want to use them in the 1st generation step
-        if inputs_embeds is not None and past_key_values is None:
-            model_inputs = {"inputs_embeds": inputs_embeds}
-        else:
-            model_inputs = {"input_ids": input_ids}
-
-        model_inputs.update(
-            {
-                "position_ids": position_ids,
-                "past_key_values": past_key_values,
-                "use_cache": kwargs.get("use_cache"),
+        
+        model_inputs = {   
+                "input_ids": input_ids,
                 "attention_mask": attention_mask,
+                "features": features,
+                "feature_mask": feature_mask,
             }
-        )
+        
         return model_inputs
 

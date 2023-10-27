@@ -68,12 +68,12 @@ def load_dataset_dict(data_dir, feature="tx1", split="train"):
 
 
 
-""" Preprocess training data. Result is 
+""" Preprocess training data. Returns 
         dict {
-            "input_ids": List[torch.tensor]      -  token ids for each sentence
-            "attention_mask": List[torch.tensor] -  0 for masked tokens, 1 for visible tokens
-            "labels": List[torch.tensor]         -  same as input_ids for the sentence, -100 for pad prompt
-            "features": List[torch.tensor]       -  neural signal features
+            "input_ids": List[torch.LongTensor]      -  token ids for each sentence
+            "attention_mask": List[torch.LongTensor] -  0 for masked tokens, 1 for visible tokens
+            "labels": List[torch.LongTensor]         -  same as input_ids for the sentence, -100 for pad prompt
+            "features": List[torch.LongTensor]       -  neural signal features
         }
 """
 def preprocess_function(examples, tokenizer, prompt = ""):
@@ -81,7 +81,8 @@ def preprocess_function(examples, tokenizer, prompt = ""):
         prompt_inputs = tokenizer(
             prompt.strip(), truncation=False, return_tensors="pt"
         )
-        prompt_ids_len = len(prompt_inputs["input_ids"][0])
+        prompt_inputs = {key: prompt_inputs[key][0] for key in prompt_inputs}
+        prompt_ids_len = len(prompt_inputs["input_ids"])
 
         # Remove all punctuation except apostrophes, set to lowercase, remove extra blank spaces and append prompt
         punctuation = string.punctuation.replace("'","")
@@ -100,17 +101,24 @@ def preprocess_function(examples, tokenizer, prompt = ""):
         model_inputs["labels"] = labels
         
         # Neural signal. Conver to torch tensors
-        model_inputs["features"] = [torch.tensor(row, dtype=torch.int64) for  row in examples['features'] ]
+        model_inputs["features"] = [torch.tensor(row,dtype=torch.int64) for  row in examples['features'] ]
 
-        # print(model_inputs["features"][0])
-        # print(model_inputs["input_ids"][0])
-        # print(model_inputs["labels"][0])
-        # print(model_inputs["attention_mask"][0])
+        
 
         # Keep to evaluate infenrence
         eval = {}
         eval["sentences"] = sentences
         eval["prompt_inputs"] = prompt_inputs
+
+        # print(model_inputs["features"][0])
+        # print(model_inputs["input_ids"][0])
+        # print(model_inputs["labels"][0])
+        # print(model_inputs["attention_mask"][0])
+        # for key in model_inputs:
+        #     print(key, model_inputs[key][0].dtype)
+        # for key in prompt_inputs:
+        #     print(key, prompt_inputs[key].dtype)
+
         return {
             "model_inputs": model_inputs,
             "eval": eval
@@ -125,6 +133,7 @@ data_dir = "/n/home07/djimenezbeneto/lab/datasets/BCI"
 model_path = "/n/home07/djimenezbeneto/lab/models/BCI"
 proc_path = "/n/home07/djimenezbeneto/lab/datasets/BCI/processed.data"
 
+prompt = tokenizer.eos_token
 prompt = ""
 feature="tx1"
 split="train"

@@ -19,6 +19,15 @@ class BCIDataset(Dataset):
         }
 
 
+""" Batch data. Returns
+        dict {
+            "input_ids": torch.LongTensor        -  token ids for each sentence
+            "attention_mask": torch.FloatTensor  -  0. for masked tokens, 1. for visible tokens
+            "labels": torch.LongTensor           -  same as input_ids for the sentence, -100 for pad prompt
+            "features": torch.FloatTensor        -  neural signal features
+            "feature_mask": torch.FloatTensor    -  0. for added time bins, 1. for real time bins
+        }
+"""
 def pad_collate_fn(pad_id, batch):
     padded_batch = {}
     padded_batch["input_ids"] = []
@@ -44,11 +53,13 @@ def pad_collate_fn(pad_id, batch):
 
         padded_batch["input_ids"].append(torch.cat((batch[i]["input_ids"], pad_seq),-1))
         padded_batch["labels"].append(torch.cat((batch[i]["labels"], mask_lab),-1))
-        padded_batch["attention_mask"].append(torch.cat((batch[i]["attention_mask"], mask_seq),-1))
-        padded_batch["features"].append(torch.cat((pad_fea, batch[i]["features"]), -2))
-        padded_batch["feature_mask"].append(mask_fea)
+        padded_batch["attention_mask"].append(torch.cat((batch[i]["attention_mask"], mask_seq),-1).float())
+        padded_batch["features"].append(torch.cat((pad_fea, batch[i]["features"]), -2).float())
+        padded_batch["feature_mask"].append(mask_fea.float())
 
     padded_batch = {key: torch.stack(padded_batch[key]) for key in padded_batch}
+    # for key in padded_batch:
+    #     print(key, padded_batch[key].dtype)
 
     return padded_batch
         

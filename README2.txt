@@ -30,8 +30,10 @@ CHANGES
 
 
 TO DO
--Talk about which part of the model is under LORA
+-which part of the model is under LORA ?
 -Using higher lr for encoder and lower for decoder?
+-pad_to_multiple_of ?
+- add eos_token -> neural_signal</s><s>sentence
 
 OBS
 - We may need to add the Encoder or EncoderLayer to the no split module of llama if there are any kind of residual connections,

@@ -1,140 +1,77 @@
 import os
 from typing import List, Optional, Tuple, Dict
 
-from transformers import LlamaPreTrainedModel
-from transformers import LlamaModel, LlamaConfig
+from transformers import LlamaPreTrainedModel, LlamaConfig
 from transformers.modeling_outputs import CausalLMOutputWithPast
 
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from peft_wrapper import PeftModelForBCI, PeftConfig
-
-
-
-# Dummy module that simulates the Encoder between the data and the Language Model
-class Encoder(nn.Module):
-
-    def __init__(self, config: LlamaConfig):
-        super().__init__()
-
-        self.fc = nn.Linear(256, config.hidden_size)
-
-    def forward(
-            self, 
-            features: torch.FloatTensor,
-        ):
-
-        return self.fc(features)
-    
-
-# Wrap transformer and lm_head of Llama
-class LlamaDecoderWithLMHead(LlamaPreTrainedModel):
-
-    def __init__(self, config: LlamaConfig):
-        super().__init__(config)
-
-        # Architecture
-        self.transformer = LlamaModel(config)
-        self.lm_head     = nn.Linear(config.hidden_size, config.vocab_size, bias=False)
-        
-        
-    def forward(
-            self,
-            inputs_embeds: torch.FloatTensor,
-            attention_mask: torch.FloatTensor,
-
-        ) -> torch.FloatTensor:
-
-
-        # decoder outputs consists of (dec_features, layer_state, dec_hidden, dec_attn)
-        outputs = self.transformer(  
-            inputs_embeds=inputs_embeds, 
-            attention_mask=attention_mask,
-        )
-
-        hidden_states = outputs[0]
-        logits = self.lm_head(hidden_states)
-        logits = logits.float()
-
-        return logits
-    
-
-    ## COMPATIBILITY WITH HF METHODS ## 
-    def get_input_embeddings(self):
-        return self.transformer.embed_tokens
-
-    def set_input_embeddings(self, value):
-        self.transformer.embed_tokens = value
-
-    def get_output_embeddings(self):
-        return self.lm_head
-
-    def set_output_embeddings(self, value):
-        self.lm_head = value
-
-    def get_decoder(self):
-        return self.transformer
-    
-    def set_decoder(self, value):
-        self.transformer = value
+from models.peft_wrapper import PeftModelForBCI, PeftConfig
+from models.llama_decoder import LlamaDecoderWithLMHead
+from models.neural_encoder import NeuralEncoder, NeuralConfig
 
 
 
 # BCI class. Subclass  of LlamaPretrainedModel to acces all the hf code (from_pretained, etc)
 class BCI(LlamaPreTrainedModel):
 
-    def __init__(self, config: LlamaConfig):
-        super().__init__(config)
-    
+    def __init__(self, llama_config: LlamaConfig, neural_config: NeuralConfig):
+        super().__init__(llama_config)
 
         # Configuration
-        _no_split_modules = ["LlamaDecoderLayer"]  # Override llama default because we may want to add the encoder or the encoder layer module here
-        self.vocab_size = config.vocab_size
+        self.neural_config = neural_config
+        _no_split_modules = ["LlamaDecoderLayer", "NeuralEncoderLayer"]  # Override llama default because we may want to add the encoder or the encoder layer module here
+        self.vocab_size = llama_config.vocab_size
         self._is_peft = False
 
         # Architecture
-        self.encoder = Encoder(config)
-        self.decoder = LlamaDecoderWithLMHead(config)
+        self.encoder = NeuralEncoder(neural_config)
+        self.decoder = LlamaDecoderWithLMHead(llama_config)
 
         # init weights
         self.post_init() # from hf
 
 
-
     def forward(
             self,
-            input_ids: torch.LongTensor,
-            attention_mask: torch.FloatTensor,
-            features: torch.FloatTensor,
-            feature_mask: torch.FloatTensor,
-            labels: Optional[torch.LongTensor] = None,
+            input_ids: torch.LongTensor,                # (batch_size, seq_len)
+            attention_mask: torch.FloatTensor,          # (batch_size, seq_len)
+            features: torch.FloatTensor,                # (batch_size, fea_len, n_channels)
+            features_mask: torch.FloatTensor,           # (batch_size, fea_len)
+            features_timestamp: torch.LongTensor,       # (batch_size, fea_len)
+            block_idx: torch.LongTensor,                # (batch_size, fea_len)
+            date_idx: torch.LongTensor,                 # (batch_size, fea_len)
+            labels: Optional[torch.LongTensor] = None,  # (batch_size, seq_len)
             **kwargs, # added for compatibility with hf model.generate
 
         ) -> CausalLMOutputWithPast:
 
- 
-        # Embed tokens of sentence
-        sentence_embeds = self.decoder.transformer.embed_tokens(input_ids)
+        # Encode neural signal
+        neural_embeds = self.encoder(features, features_mask, features_timestamp, block_idx, date_idx) # (batch_size, lat_len, hidden_size)
 
-        # Embed neural signal
-        neural_embeds = self.encoder(features)
+        # Embed tokens of sentence
+        sentence_embeds = self.decoder.transformer.embed_tokens(input_ids)  # (batch_size, seq_len, hidden_size)
 
         # Prepare inputs for decoder
-        inputs_embeds = torch.cat((neural_embeds, sentence_embeds), -2)
-        attention_mask = torch.cat((feature_mask, attention_mask), -1)
+        neural_mask = torch.ones(neural_embeds.shape[:2], device=attention_mask.device, dtype=attention_mask.dtype)
+        inputs_embeds = torch.cat((neural_embeds, sentence_embeds), -2)   # (batch_size, lat+seq_len, hidden_size)
+        attention_mask = torch.cat((neural_mask, attention_mask), -1)     # (batch_size, lat+seq_len, hidden_size)
 
         # Forward decoder
         logits = self.decoder(  
             inputs_embeds=inputs_embeds,
             attention_mask=attention_mask,
-        )
+        )   # (batch_size, lat+seq_len, vocab_size)
         
         loss = None
         if labels is not None:
             # Add features mask to match sizes
-            labels = torch.cat((torch.ones_like(feature_mask, dtype=labels.dtype)*(-100), labels), -1)
+            labels = torch.cat((
+                        torch.ones(neural_embeds.shape[:2], device=labels.device, dtype=labels.dtype)*(-100), 
+                        labels
+                    ), -1)          # (batch_size, lat+seq_len)
 
             # Shift so that tokens < n predict n
             shift_logits = logits[..., :-1, :].contiguous()
@@ -157,34 +94,46 @@ class BCI(LlamaPreTrainedModel):
 
     ## LOADING METHODS ##
 
-    # Override from_pretrained method to set _is_peft
+    # Wrap from_pretrained method to set _is_peft and deal with neural_config. If neural_config is not 
+    # provided, it will look for it in the checkpoint folder. This will raise an error when loading the llama
+    # checkpoint 
     @classmethod
-    def from_pretrained(cls, model_name_or_path, *model_args, **kwargs):
-        model = super().from_pretrained(model_name_or_path, *model_args, **kwargs)
+    def from_pretrained(cls, model_name_or_path, neural_config):
+        if neural_config is None:
+            neural_config_file = os.path.join(model_name_or_path, "neural_config.bin")
+            assert os.path.isfile(neural_config_file), """Attempting to load pretrained config for NeuralEncoder but 
+            neural_config was not found in {}""".format(model_name_or_path)
+            neural_config = torch.load() if neural_config is None else neural_config
+        model = super().from_pretrained(model_name_or_path, neural_config)
         model._is_peft = False
 
         return model
 
-    # Load pertrained model and create peft adapter
+    # Load pertrained model and create peft adapter. If neural_config is not provided, it will look for it in the
+    # checkpoint folder. This will raise an error when loading the llama checkpoint 
     @classmethod
-    def peft_from_pretrained(cls, model_name_or_path, peft_config, *model_args, **kwargs):
+    def peft_from_pretrained(cls, model_name_or_path, peft_config, neural_config=None):
 
         # Create BCI model and load Llama2 weights to decoder and lm_head
-        model = cls.from_pretrained(model_name_or_path, *model_args, **kwargs)
+        model = cls.from_pretrained(model_name_or_path, neural_config)
         
         # Add peft adapter to the decoder
         model.decoder = PeftModelForBCI(model.decoder, peft_config)
         model._is_peft = True
 
-
         return model
 
-    # Load pretrained adapter
+    # Load pretrained adapter. If neural_config is not provided, it will look for it in the adapter folder. 
     @classmethod
-    def peft_from_adapter(cls, model_name_or_path, path_to_adapter, is_trainable=False, adapter_name = "default", *args, **kwargs):
+    def peft_from_adapter(cls, model_name_or_path, path_to_adapter, is_trainable=False, adapter_name="default", neural_config=None):
+        
+        neural_config_file = os.path.join(path_to_adapter, "neural_config.bin")
+        assert os.path.isfile(neural_config_file), """Attempting to load pretrained config for NeuralEncoder but 
+        neural_config was not found in {}""".format(path_to_adapter)
+        neural_config = torch.load() if neural_config is None else neural_config
 
         # Load pretrained Llama model
-        model = cls.from_pretrained(model_name_or_path, *args, **kwargs)
+        model = cls.from_pretrained(model_name_or_path, neural_config)
 
         # Load trained weights for encoder
         model.encoder.load_state_dict(torch.load(os.path.join(path_to_adapter,"encoder.bin")))
@@ -203,10 +152,15 @@ class BCI(LlamaPreTrainedModel):
 
     ## SAVING METHODS ##
 
-    # Override save_pretrained method to avoid issues with the adapter
+    # Wrap save_pretrained method to avoid issues with the adapter and deal with neural_config
     def save_pretrained(self, path_to_model, **kwargs):
         if self._is_peft:
             raise Exception("Peft adapter is loaded, merge before saving")
+
+        if not os.path.exists(path_to_model):
+            os.makedirs(path_to_model)
+
+        torch.save(self.neural_config, os.path.join(path_to_model, "neural_config.bin"))
         super().save_pretrained(path_to_model, **kwargs)
 
 
@@ -218,8 +172,8 @@ class BCI(LlamaPreTrainedModel):
         
         if not os.path.exists(path_to_adapter):
             os.makedirs(path_to_adapter)
-        
-        # Save state all parameters of encoder and save decoder adapter
+
+        torch.save(self.neural_config, os.path.join(model_name_or_path, "neural_config.bin"))
         torch.save(self.encoder.state_dict(), os.path.join(path_to_adapter,"encoder.bin"))
         self.decoder.save_pretrained(path_to_adapter, **kwargs)
 
@@ -271,14 +225,17 @@ class BCI(LlamaPreTrainedModel):
 
     # Override hf method (requirment for generation)
     def prepare_inputs_for_generation(
-        self, input_ids, attention_mask, features, feature_mask, **kwargs
+        self, input_ids, attention_mask, features, features_mask, timestamp, block_idx, date_idx, **kwargs
     ):
         
         model_inputs = {   
                 "input_ids": input_ids,
                 "attention_mask": attention_mask,
                 "features": features,
-                "feature_mask": feature_mask,
+                "features_mask": features_mask,
+                "timestamp": timestamp,
+                "block_idx": block_idx,
+                "date_idx": date_idx,
             }
         
         return model_inputs

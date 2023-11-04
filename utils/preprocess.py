@@ -17,51 +17,69 @@ def get_split_dict(split_dir, feature="tx1"):
     all_files = glob(os.path.join(split_dir,"*"))
     x = []
     y = []
+    b = []
+    d = []
     for file in tqdm(all_files):
         data = scipy.io.loadmat(file)
         x_i = data[feature][0]
-        y_i = data["sentenceText"] 
+        y_i = data["sentenceText"]
+        b_i = data["blockIdx"]
+        d_i = [tuple(file.split("/")[-1].split(".")[1:4])] * len(b_i)
         x.append(x_i)
         y.append(y_i)
+        b.append(b_i)
+        d += d_i
     x = np.concatenate(x).tolist()
     y = np.concatenate(y)
+    b = (np.concatenate(b).squeeze() - 1).tolist()    # translate to start at 0
+
+    
 
     return {
         "features":  x,   
         "sentences": y,
+        "block_idx": b,
+        "date_idx": d,
     }
     
 
 # Load the dataset dict for training/evaluation
 def load_dataset_dict(data_dir, feature="tx1", split="train"):
 
+    print("Loading train data...")
+    train_dir = os.path.join(data_dir, "competitionData/train/")
+    train_dict = get_split_dict(train_dir, feature)
+
+    print("Loading test data...")
+    test_dir = os.path.join(data_dir, "competitionData/test/")
+    test_dict = get_split_dict(test_dir, feature)
+
+    print("Loading heldout data...")
+    heldout_dir = os.path.join(data_dir, "competitionData/competitionHoldOut/")
+    heldout_dict = get_split_dict(heldout_dir, feature)
+
+
+    all_dates = set(train_dict["date_idx"]+ test_dict["date_idx"] + heldout_dict["date_idx"])
+    d_to_i = {d: i for i, d in enumerate(all_dates)}
+    for split_dict in [train_dict, test_dict, heldout_dict]:
+        split_dict["date_idx"] = [d_to_i[d] for d in split_dict["date_idx"]]
+
+    all_blocks = set(train_dict["block_idx"]+ test_dict["block_idx"] + heldout_dict["block_idx"])
+    print("Dates: ", len(d_to_i))
+    print("Blocks: ", all_blocks)
+
     if split == "train":
-
-        print("Loading train data...")
-        train_dir = os.path.join(data_dir, "competitionData/train/")
-        train_dict = get_split_dict(train_dir, feature)
-
-        print("Loading test data...")
-        test_dir = os.path.join(data_dir, "competitionData/test/")
-        test_dict = get_split_dict(test_dir, feature)
-
         return {
                 "train": train_dict,
                 "test":  test_dict,
                 }
 
     elif split == "test": 
-        print("Loading test data...")
-        test_dir = os.path.join(data_dir, "competitionData/test/")
-        test_dict = get_split_dict(test_dir, feature)
         return {
                 "test": test_dict,
                 }
 
     elif split == "heldout": 
-        print("Loading heldout data...")
-        heldout_dir = os.path.join(data_dir, "competitionData/competitionHoldOut/")
-        heldout_dict = get_split_dict(heldout_dir, feature)
         return {
                 "heldout": heldout_dict,
                 }
@@ -74,6 +92,8 @@ def load_dataset_dict(data_dir, feature="tx1", split="train"):
             "attention_mask": List[torch.LongTensor] -  0 for masked tokens, 1 for visible tokens
             "labels": List[torch.LongTensor]         -  same as input_ids for the sentence, -100 for pad prompt
             "features": List[torch.LongTensor]       -  neural signal features
+            "block_idx": List[torch.LongTensor]      -  index of block of trials
+            "date_idx": List[torch.LongTensor]       -  index of day of experiment
         }
 """
 def preprocess_function(examples, tokenizer, prompt = ""):
@@ -100,10 +120,14 @@ def preprocess_function(examples, tokenizer, prompt = ""):
             row[:prompt_ids_len] = -100 # default nn.CrossEntropyLoss ignore_index
         model_inputs["labels"] = labels
         
-        # Neural signal. Conver to torch tensors
+        # Neural signal. Convert to torch tensors
         model_inputs["features"] = [torch.tensor(row,dtype=torch.int64) for  row in examples['features'] ]
 
-        
+        # Block index.
+        model_inputs["block_idx"] = [torch.tensor(row,dtype=torch.int64) for  row in examples['block_idx'] ]
+
+        # Date index
+        model_inputs["date_idx"] = [torch.tensor(row,dtype=torch.int64) for  row in examples['date_idx'] ]
 
         # Keep to evaluate infenrence
         eval = {}
@@ -133,13 +157,15 @@ data_dir = "/n/home07/djimenezbeneto/lab/datasets/BCI"
 model_path = "/n/home07/djimenezbeneto/lab/models/BCI"
 proc_path = "/n/home07/djimenezbeneto/lab/datasets/BCI/processed.data"
 
+
+tokenizer = AutoTokenizer.from_pretrained(model_path)
+
 prompt = tokenizer.eos_token
 prompt = ""
 feature="tx1"
 split="train"
 
 
-tokenizer = AutoTokenizer.from_pretrained(model_path)
 
 ds = load_dataset_dict(data_dir, feature=feature, split=split)
 proc_ds = {

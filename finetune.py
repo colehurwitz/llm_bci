@@ -12,8 +12,15 @@ from peft import LoraConfig
 from peft.utils.other import fsdp_auto_wrap_policy
 
 
-from bci import BCI
-from data_utils import BCIDataset, pad_collate_fn
+from models.bci import BCI
+from models.neural_encoder import NeuralConfig
+from utils.data_utils import BCIDataset, pad_collate_fn
+
+def reset_seeds(seed):
+    torch.manual_seed(seed)
+    torch.cuda.manual_seed(seed)
+    # torch.backends.cudnn.deterministic=True
+    # torch.backends.cudnn.benchmark = False
 
 def main():
     accelerator = Accelerator()
@@ -23,47 +30,53 @@ def main():
     
     proc_data_path = "/n/home07/djimenezbeneto/lab/datasets/BCI/processed.data"
     
-    batch_size = 1
+    seed = 1
+    batch_size = 128
     lr = 3e-4
     num_epochs = 1
 
     peft_config = LoraConfig(
         inference_mode=False, r=8, lora_alpha=32, lora_dropout=0.1,
-        target_modules=["q_proj","v_proj","gate_proj"]
+        target_modules=["q_proj","v_proj","k_proj"]
     )
+
     
+    neural_config = NeuralConfig()
 
-    # Load model with peft adapter for decoder
-    model = BCI.peft_from_pretrained(model_name_or_path, peft_config)    
-    accelerator.print(f"Encoder params: {sum(p.numel() for p in model.encoder.parameters() if p.requires_grad):,}")
-    accelerator.print("Decoder: ")
-    model.decoder.print_trainable_parameters()
-
+    reset_seeds(seed)
 
     tokenizer = AutoTokenizer.from_pretrained(model_name_or_path, padding_side='right')
     # Llama was pretrained without a pad token, we have to manually add it for fine-tuning
     tokenizer.add_special_tokens(
         {'pad_token': '[PAD]'}
     )
-    pad_id = tokenizer.pad_token_id
-    model.decoder.resize_token_embeddings(len(tokenizer), pad_to_multiple_of=64)
-
-    # accelerator.print(model)
-
-
 
     # Load preprocessed dataset
     data = torch.load(proc_data_path)
-    train_dataset = BCIDataset(data["train"]["model_inputs"])
-    test_dataset = BCIDataset(data["test"]["model_inputs"])
+    train_dataset = BCIDataset({key: data["train"]["model_inputs"][key][:512] for key in data["train"]["model_inputs"]})
+    test_dataset = BCIDataset({key: data["test"]["model_inputs"][key][:512] for key in data["test"]["model_inputs"]})
+
+    # Arguments for padding function
+    pad_id = tokenizer.pad_token_id
+    L = max(neural_config.n_latents)
 
     train_dataloader = DataLoader(
-        train_dataset, shuffle=True, collate_fn=partial(pad_collate_fn,pad_id), batch_size=batch_size, pin_memory=True
+        train_dataset, shuffle=True, collate_fn=partial(pad_collate_fn,pad_id,L), batch_size=batch_size, pin_memory=True
     )
     test_dataloader = DataLoader(
-        test_dataset, collate_fn=partial(pad_collate_fn,pad_id), batch_size=batch_size, pin_memory=True
+        test_dataset, collate_fn=partial(pad_collate_fn,pad_id,L), batch_size=batch_size, pin_memory=True
     )
 
+
+    # Load model with peft adapter for decoder
+    model = BCI.peft_from_pretrained(model_name_or_path, peft_config, neural_config=neural_config)   
+    model.decoder.resize_token_embeddings(len(tokenizer), pad_to_multiple_of=64)
+    accelerator.print(f"Resizing token embeds.")
+
+    # accelerator.print(model)
+    accelerator.print(f"Encoder params: {sum(p.numel() for p in model.encoder.parameters() if p.requires_grad):,}")
+    accelerator.print("Decoder: ")
+    model.decoder.print_trainable_parameters()
 
     # Setup optimizer
     optimizer = torch.optim.AdamW(model.parameters(), lr=lr)
@@ -104,20 +117,17 @@ def main():
 
         model.eval()
         test_loss = 0
-        # test_preds = []
+        test_preds = []
         for step, batch in enumerate(tqdm(test_dataloader)):
             with torch.no_grad():
                 outputs = model(**batch)
             loss = outputs.loss
             test_loss += loss.detach().float()
-            # preds = accelerator.gather_for_metrics(torch.argmax(outputs.logits, -1)).detach().cpu().numpy()
-            # test_preds.extend(tokenizer.batch_decode(preds, skip_special_tokens=True))
         test_epoch_loss = test_loss / len(test_dataloader)
         test_ppl = torch.exp(test_epoch_loss)
         train_epoch_loss = total_loss / len(train_dataloader)
         train_ppl = torch.exp(train_epoch_loss)
         accelerator.print(f"{epoch=}: {train_ppl=} {train_epoch_loss=} {test_ppl=} {test_epoch_loss=}")
-
 
         accelerator.wait_for_everyone()
         

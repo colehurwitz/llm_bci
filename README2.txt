@@ -34,8 +34,17 @@ TO DO
 -Using higher lr for encoder and lower for decoder?
 -pad_to_multiple_of ?
 - add eos_token -> neural_signal</s><s>sentence
+-data augmentation by choosing subset of channels?
 
 OBS
+-Max block and date index has to be specified in NeuralConfig, read from preprocess.py output
+-Right now I am using the same timestamps for all the examples, which means that effectively some of them are slightly
+compressed or expanded to match the "duration" of the latents. This is to ensure that all latents are carrying 
+information. Another approach would be to use the actual duration of the inputs (scaled so that the maximum duration 
+is equal or less than the "duration" of the latents), but then the last (or the first) latents would be left out
+of the sequence (positionally). We could follow this approach and maybe mask the unused tokens
+- BLOCK 25 is only in test set. Train blocks:  {1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 23, 24}
+Test blocks: {8, 12, 13, 14, 15, 16, 17, 18, 19, 20, 25}. Heldout blocks: {1, 2, 3, 4, 6, 7}
 - We may need to add the Encoder or EncoderLayer to the no split module of llama if there are any kind of residual connections,
 this is to ensure that all the tensors are in the same rank for every operation in the module
 - hf from_pretrained has the name/directory as args, *model_args to pass to the model __init__ method, and all the rest are **kwargs

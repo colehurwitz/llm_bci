@@ -3,6 +3,7 @@ import torch
 from transformers import AutoTokenizer
 
 from bci import BCI
+from utils.eval_utils import word_edit_distance
 
 def main():
 

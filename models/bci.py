@@ -98,13 +98,11 @@ class BCI(LlamaPreTrainedModel):
     # provided, it will look for it in the checkpoint folder. This will raise an error when loading the llama
     # checkpoint 
     @classmethod
-    def from_pretrained(cls, model_name_or_path, neural_config):
+    def from_pretrained(cls, model_name_or_path, neural_config=None, **kwargs):
         if neural_config is None:
             neural_config_file = os.path.join(model_name_or_path, "neural_config.bin")
-            assert os.path.isfile(neural_config_file), """Attempting to load pretrained config for NeuralEncoder but 
-            neural_config was not found in {}""".format(model_name_or_path)
-            neural_config = torch.load() if neural_config is None else neural_config
-        model = super().from_pretrained(model_name_or_path, neural_config)
+            neural_config = torch.load(neural_config_file) if neural_config is None else NeuralConfig()
+        model = super().from_pretrained(model_name_or_path, neural_config, **kwargs)
         model._is_peft = False
 
         return model
@@ -112,10 +110,10 @@ class BCI(LlamaPreTrainedModel):
     # Load pertrained model and create peft adapter. If neural_config is not provided, it will look for it in the
     # checkpoint folder. This will raise an error when loading the llama checkpoint 
     @classmethod
-    def peft_from_pretrained(cls, model_name_or_path, peft_config, neural_config=None):
+    def peft_from_pretrained(cls, model_name_or_path, peft_config, neural_config=None, **kwargs):
 
         # Create BCI model and load Llama2 weights to decoder and lm_head
-        model = cls.from_pretrained(model_name_or_path, neural_config)
+        model = cls.from_pretrained(model_name_or_path, neural_config, **kwargs)
         
         # Add peft adapter to the decoder
         model.decoder = PeftModelForBCI(model.decoder, peft_config)
@@ -125,17 +123,18 @@ class BCI(LlamaPreTrainedModel):
 
     # Load pretrained adapter. If neural_config is not provided, it will look for it in the adapter folder. 
     @classmethod
-    def peft_from_adapter(cls, model_name_or_path, path_to_adapter, is_trainable=False, adapter_name="default", neural_config=None):
+    def peft_from_adapter(cls, model_name_or_path, path_to_adapter, is_trainable=False, adapter_name="default", neural_config=None, **kwargs):
         
         neural_config_file = os.path.join(path_to_adapter, "neural_config.bin")
         assert os.path.isfile(neural_config_file), """Attempting to load pretrained config for NeuralEncoder but 
         neural_config was not found in {}""".format(path_to_adapter)
-        neural_config = torch.load() if neural_config is None else neural_config
+        neural_config = torch.load(neural_config_file) if neural_config is None else neural_config
 
         # Load pretrained Llama model
-        model = cls.from_pretrained(model_name_or_path, neural_config)
+        model = cls.from_pretrained(model_name_or_path, neural_config, **kwargs)
 
         # Load trained weights for encoder
+        print(f"Loading encoder weights from {path_to_adapter}")
         model.encoder.load_state_dict(torch.load(os.path.join(path_to_adapter,"encoder.bin")))
 
         # Get peft config
@@ -143,6 +142,7 @@ class BCI(LlamaPreTrainedModel):
         peft_config.inference_mode = not is_trainable
 
         # Load trained adapter for decoder
+        print(f"Loading decoder adapter from {path_to_adapter}")
         model.decoder = PeftModelForBCI(model.decoder, peft_config)
         model.decoder.load_adapter(path_to_adapter, adapter_name, is_trainable=is_trainable)
         model._is_peft = True
@@ -173,7 +173,7 @@ class BCI(LlamaPreTrainedModel):
         if not os.path.exists(path_to_adapter):
             os.makedirs(path_to_adapter)
 
-        torch.save(self.neural_config, os.path.join(model_name_or_path, "neural_config.bin"))
+        torch.save(self.neural_config, os.path.join(path_to_adapter, "neural_config.bin"))
         torch.save(self.encoder.state_dict(), os.path.join(path_to_adapter,"encoder.bin"))
         self.decoder.save_pretrained(path_to_adapter, **kwargs)
 
@@ -225,7 +225,7 @@ class BCI(LlamaPreTrainedModel):
 
     # Override hf method (requirment for generation)
     def prepare_inputs_for_generation(
-        self, input_ids, attention_mask, features, features_mask, timestamp, block_idx, date_idx, **kwargs
+        self, input_ids, attention_mask, features, features_mask, features_timestamp, block_idx, date_idx, **kwargs
     ):
         
         model_inputs = {   
@@ -233,7 +233,7 @@ class BCI(LlamaPreTrainedModel):
                 "attention_mask": attention_mask,
                 "features": features,
                 "features_mask": features_mask,
-                "timestamp": timestamp,
+                "features_timestamp": features_timestamp,
                 "block_idx": block_idx,
                 "date_idx": date_idx,
             }

@@ -12,16 +12,21 @@ class NeuralConfig:
     n_channels = 256
     n_blocks = 25
     n_dates = 24
+    embed_context = False
+    embed_gate = False
+    embed_act = "sigmoid"
 
     # architecture
-    n_cross_layers = 1
-    n_self_layers = 5
-    n_latents =   [256,256,128,64,32,16,16]
-    hidden_size = [128,128,256,512,1024,2048,4096]
-    n_heads = [8,8,16,16,32,32]
-    gating_act = "silu"
+    n_cross_layers = 2
+    n_self_layers = 0
+    # n_latents =   [256,256,128,64,32,16,16]
+    # hidden_size = [128,128,256,512,1024,2048,4096]
+    n_latents =   [256,256,16]
+    hidden_size = [128,128,4096]
+    n_heads = [4,4]
+    hidden_act = "silu"
 
-    dropout = 0.0
+    dropout = 0.5
     embed_bias = False
     attention_bias = False
     mlp_bias = False
@@ -178,7 +183,7 @@ class NeuralEncoderLayer(nn.Module):
         self.attention = NeuralAttention(self.n_latents_in, self.hidden_size_in, config.n_heads[idx], config.attention_bias, config.dropout, max(config.n_latents), config.rope_theta, idx)
         self.ln2 = nn.LayerNorm(self.hidden_size_inter)
         self.residual_projection = nn.Linear(self.hidden_size_inter, self.hidden_size_out, bias=config.mlp_bias)
-        self.mlp = NeuralMLP(self.hidden_size_inter, self.hidden_size_out, config.gating_act, config.mlp_bias, config.dropout)
+        self.mlp = NeuralMLP(self.hidden_size_inter, self.hidden_size_out, config.hidden_act, config.mlp_bias, config.dropout)
         
         
 
@@ -222,16 +227,30 @@ class NeuralEncoder(nn.Module):
         assert len(config.n_heads) == self.n_layers, "Head size pattern and number of layers don't match"
         self.n_latents = config.n_latents[0]
         self.hidden_size = config.hidden_size[0]
+        
+        # Levers
+        self.embed_context = config.embed_context
+        self.embed_gate = config.embed_gate
+
 
         # Embed latents and context
-        self.embed_block = nn.Embedding(config.n_blocks, self.hidden_size)
-        self.embed_date = nn.Embedding(config.n_dates, self.hidden_size)
-        self.latents = nn.Parameter(torch.randn(self.n_latents,self.hidden_size))
-        self.embed_latents = nn.Linear(3*self.hidden_size, self.hidden_size, bias=config.embed_bias)
-
+        if config.embed_context:
+            self.embed_block = nn.Embedding(config.n_blocks, self.hidden_size)
+            self.embed_date = nn.Embedding(config.n_dates, self.hidden_size)
+            self.latents = nn.Parameter(torch.randn(self.n_latents,self.hidden_size))
+            self.embed_latents = nn.Linear(3*self.hidden_size, self.hidden_size, bias=config.embed_bias)
+        else:
+            self.latents = nn.Parameter(torch.randn(self.n_latents,self.hidden_size))
+            
 
         # Embed neural data
         self.embed_spikes = nn.Linear(config.n_channels, self.hidden_size, bias=config.embed_bias)
+        if config.embed_gate:
+            self.gate_spikes = nn.Sequential(
+                nn.Linear(config.n_channels, self.hidden_size, bias=config.embed_bias),
+                ACT2FN[config.embed_act],
+            )
+
         self.dropout = nn.Dropout(config.dropout)
 
         # Attention+MLP layers
@@ -249,14 +268,20 @@ class NeuralEncoder(nn.Module):
         
         B, _, _ = features.size() # batch size
         
-        # Embed latents together with context and batch
-        block_embd = self.embed_block(block_idx).unsqueeze(1).expand(B,self.n_latents,self.hidden_size)
-        date_embd = self.embed_block(date_idx).unsqueeze(1).expand_as(block_embd)
-        latents = self.embed_latents(torch.cat((self.latents.unsqueeze(0).expand_as(block_embd),block_embd,date_embd),-1))
+        # Embed latents together with context; and batch
+        if self.embed_context:
+            block_embd = self.embed_block(block_idx).unsqueeze(1).expand(B,self.n_latents,self.hidden_size)
+            date_embd = self.embed_block(date_idx).unsqueeze(1).expand_as(block_embd)
+            latents = self.embed_latents(torch.cat((self.latents.unsqueeze(0).expand_as(block_embd),block_embd,date_embd),-1))
+        else:
+            latents = self.latents.unsqueeze(0).expand(B,self.n_latents,self.hidden_size)
 
         # Embed neural data
-        features = self.embed_spikes(features)
-
+        if self.embed_gate:
+            features = self.embed_spikes(features) * self.gate_spikes(features)
+        else:
+            features = self.embed_spikes(features)
+            
         # Dropout
         latents = self.dropout(latents)
         features = self.dropout(features)

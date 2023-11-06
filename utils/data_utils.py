@@ -4,21 +4,38 @@ from torch.utils.data import Dataset
 
 class BCIDataset(Dataset):
 
-    def __init__(self, data):
+    def __init__(self, data, split="train", len = None):
         self.data = data
+        self.split = split
+        if len is not None:
+            self.data["model_inputs"] = {key: self.data["model_inputs"][key][:len] for key in self.data["model_inputs"]}
+            self.data["eval"]["sentences"] = self.data["eval"]["sentences"][:len]
 
     def __len__(self):
-        return len(self.data["input_ids"])
+        return len(self.data["model_inputs"]["input_ids"])
 
     def __getitem__(self, idx):
-        return {
-            "input_ids": self.data["input_ids"][idx],
-            "labels": self.data["labels"][idx],
-            "attention_mask": self.data["attention_mask"][idx],
-            "features": self.data["features"][idx],
-            "block_idx": self.data["block_idx"][idx],
-            "date_idx": self.data["date_idx"][idx],
-        }
+        if self.split == "train":
+            return {
+                "input_ids": self.data["model_inputs"]["input_ids"][idx],
+                "labels": self.data["model_inputs"]["labels"][idx],
+                "attention_mask": self.data["model_inputs"]["attention_mask"][idx],
+                "features": self.data["model_inputs"]["features"][idx],
+                "block_idx": self.data["model_inputs"]["block_idx"][idx],
+                "date_idx": self.data["model_inputs"]["date_idx"][idx],
+            }
+        elif self.split == "eval":
+            return {
+                "input_ids": self.data["eval"]["prompt_inputs"]["input_ids"],
+                "labels": self.data["eval"]["prompt_inputs"]["input_ids"],
+                "attention_mask": self.data["eval"]["prompt_inputs"]["attention_mask"],
+                "features": self.data["model_inputs"]["features"][idx],
+                "block_idx": self.data["model_inputs"]["block_idx"][idx],
+                "date_idx": self.data["model_inputs"]["date_idx"][idx],
+                "sentence": self.data["eval"]["sentences"][idx],
+            }
+        else:
+            raise Exception(f"Split {self.split} is not known")
 
 
 """ Batch data. Returns
@@ -31,9 +48,10 @@ class BCIDataset(Dataset):
             "features_timestamp": torch.LongTensor        -  position encoding for neural data
             "block_idx":torch.LongTensor         -  index of block of trials
             "date_idx": torch.LongTensor         -  index of day of experiment
+            "sentence": Optional[List[str]]      -  target sentence
         }
 """
-def pad_collate_fn(pad_id, T, batch):
+def pad_collate_fn(pad_id, L, split, batch):
     padded_batch = {}
     padded_batch["input_ids"] = []
     padded_batch["labels"] = []
@@ -67,12 +85,20 @@ def pad_collate_fn(pad_id, T, batch):
         padded_batch["features"].append(torch.cat((pad_fea, batch[i]["features"]), -2).float())
         padded_batch["features_mask"].append(mask_fea.float())
         padded_batch["features_timestamp"].append(
-            torch.cat( (  torch.round(torch.arange(fea_len) * (T-1) / (fea_len-1)), pad_fea[:,0]) ).to(batch[i]["input_ids"].dtype)
+            torch.cat( (  torch.round(torch.arange(fea_len) * (L-1) / (fea_len-1)), pad_fea[:,0]) ).to(batch[i]["input_ids"].dtype)
         )    
 
     padded_batch = {key: torch.stack(padded_batch[key]) for key in padded_batch}
     # for key in padded_batch:
     #     print(key, padded_batch[key].dtype)
+
+    if split == "train":
+        return padded_batch
+    elif split == "eval":
+        del padded_batch["labels"]
+        return padded_batch, [batch[i]["sentence"] for i in range(len(batch))]
+    else:
+        raise Exception(f"Split {split} is not known")
 
     return padded_batch
         

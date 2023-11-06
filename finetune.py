@@ -1,3 +1,5 @@
+import os
+import json
 from functools import partial
 from tqdm import tqdm
 
@@ -24,59 +26,57 @@ def reset_seeds(seed):
 
 def main():
     accelerator = Accelerator()
+    savestring = "test2"
     model_name_or_path = "/n/home07/djimenezbeneto/lab/models/BCI"
-    adapter_path = "/n/home07/djimenezbeneto/lab/BCI/peft/"
-    merged_path = "/n/home07/djimenezbeneto/lab/BCI/merged/"
+    checkpoint_path = f"/n/home07/djimenezbeneto/lab/BCI/checkpoints/{savestring}"
+    final_path = f"/n/home07/djimenezbeneto/lab/BCI/ft_models/{savestring}"
     
     proc_data_path = "/n/home07/djimenezbeneto/lab/datasets/BCI/processed.data"
-    
+    split = "train"
     seed = 1
-    batch_size = 128
+    batch_size = 64
     lr = 3e-4
-    num_epochs = 1
+    num_epochs = 50
+    save_epochs = [1,5,10,15,25,35]
 
     peft_config = LoraConfig(
         inference_mode=False, r=8, lora_alpha=32, lora_dropout=0.1,
-        target_modules=["q_proj","v_proj","k_proj"]
+        target_modules=["q_proj","v_proj"]
     )
-
     
     neural_config = NeuralConfig()
 
     reset_seeds(seed)
 
+    # Load model and tokenizer
     tokenizer = AutoTokenizer.from_pretrained(model_name_or_path, padding_side='right')
-    # Llama was pretrained without a pad token, we have to manually add it for fine-tuning
-    tokenizer.add_special_tokens(
-        {'pad_token': '[PAD]'}
-    )
-
-    # Load preprocessed dataset
-    data = torch.load(proc_data_path)
-    train_dataset = BCIDataset({key: data["train"]["model_inputs"][key][:512] for key in data["train"]["model_inputs"]})
-    test_dataset = BCIDataset({key: data["test"]["model_inputs"][key][:512] for key in data["test"]["model_inputs"]})
-
-    # Arguments for padding function
-    pad_id = tokenizer.pad_token_id
-    L = max(neural_config.n_latents)
-
-    train_dataloader = DataLoader(
-        train_dataset, shuffle=True, collate_fn=partial(pad_collate_fn,pad_id,L), batch_size=batch_size, pin_memory=True
-    )
-    test_dataloader = DataLoader(
-        test_dataset, collate_fn=partial(pad_collate_fn,pad_id,L), batch_size=batch_size, pin_memory=True
-    )
-
 
     # Load model with peft adapter for decoder
     model = BCI.peft_from_pretrained(model_name_or_path, peft_config, neural_config=neural_config)   
-    model.decoder.resize_token_embeddings(len(tokenizer), pad_to_multiple_of=64)
-    accelerator.print(f"Resizing token embeds.")
-
-    # accelerator.print(model)
+    accelerator.print(model)
     accelerator.print(f"Encoder params: {sum(p.numel() for p in model.encoder.parameters() if p.requires_grad):,}")
     accelerator.print("Decoder: ")
     model.decoder.print_trainable_parameters()
+
+    # Load preprocessed dataset
+    data = torch.load(proc_data_path)
+    train_data = data["train"]
+    test_data = data["test"]
+
+    train_dataset = BCIDataset(train_data, split=split)
+    test_dataset = BCIDataset(test_data, split=split)
+
+    # Arguments for padding function
+    pad_id = tokenizer.eos_token_id
+    L = max(neural_config.n_latents)
+
+    train_dataloader = DataLoader(
+        train_dataset, shuffle=True, collate_fn=partial(pad_collate_fn,pad_id,L,split), batch_size=batch_size, pin_memory=True
+    )
+    test_dataloader = DataLoader(
+        test_dataset, collate_fn=partial(pad_collate_fn,pad_id,L,split), batch_size=batch_size, pin_memory=True
+    )
+
 
     # Setup optimizer
     optimizer = torch.optim.AdamW(model.parameters(), lr=lr)
@@ -102,6 +102,8 @@ def main():
 
 
     # Train
+    all_test_epoch_loss = []
+    all_train_epoch_loss = []
     for epoch in range(num_epochs):
         model.train()
         total_loss = 0
@@ -129,12 +131,20 @@ def main():
         train_ppl = torch.exp(train_epoch_loss)
         accelerator.print(f"{epoch=}: {train_ppl=} {train_epoch_loss=} {test_ppl=} {test_epoch_loss=}")
 
+        all_train_epoch_loss.append(train_epoch_loss.item())
+        all_test_epoch_loss.append(test_epoch_loss.item())
+        
+        if epoch in save_epochs and accelerator.is_main_process:
+            model.save_adapter(os.path.join(checkpoint_path,f"EP{epoch}"))
+
         accelerator.wait_for_everyone()
         
 
     if accelerator.is_main_process:
         model.merge_decoder()
-        model.save_pretrained(merged_path)
+        model.save_pretrained(final_path)
+        json.dump(all_train_epoch_loss, open(os.path.join(final_path,"train_loss.json"),"w"))
+        json.dump(all_test_epoch_loss, open(os.path.join(final_path,"test_loss.json"),"w"))
 
 if __name__ == "__main__":
     main()

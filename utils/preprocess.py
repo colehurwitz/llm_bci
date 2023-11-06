@@ -99,18 +99,23 @@ def load_dataset_dict(data_dir, feature="tx1", split="train"):
 def preprocess_function(examples, tokenizer, prompt = ""):
 
         prompt_inputs = tokenizer(
-            prompt.strip(), truncation=False, return_tensors="pt"
+            prompt + tokenizer.bos_token, truncation=False, return_tensors="pt"
         )
         prompt_inputs = {key: prompt_inputs[key][0] for key in prompt_inputs}
-        prompt_ids_len = len(prompt_inputs["input_ids"])
+        prompt_ids_len = len(prompt_inputs["input_ids"]) - 1
 
         # Remove all punctuation except apostrophes, set to lowercase, remove extra blank spaces and append prompt
         punctuation = string.punctuation.replace("'","")
-        sentences = [prompt + s.translate(str.maketrans("","",punctuation)).lower().strip() for s in examples['sentences']]
+        sentences = [
+            prompt  + tokenizer.bos_token +
+            s.translate(str.maketrans("","",punctuation)).lower().strip() + 
+            tokenizer.eos_token 
+            for s in examples['sentences']
+        ]
 
         # "input_ids" and "attention_mask" for prompt+sentence
         model_inputs = tokenizer(
-            sentences, truncation=False,
+            sentences, truncation=False
         )
         model_inputs = {key: [torch.tensor(row) for row in model_inputs[key]] for key in model_inputs}
 
@@ -158,9 +163,8 @@ model_path = "/n/home07/djimenezbeneto/lab/models/BCI"
 proc_path = "/n/home07/djimenezbeneto/lab/datasets/BCI/processed.data"
 
 
-tokenizer = AutoTokenizer.from_pretrained(model_path)
+tokenizer = AutoTokenizer.from_pretrained(model_path, add_bos_token=False, add_eos_token=False)
 
-prompt = tokenizer.eos_token
 prompt = ""
 feature="tx1"
 split="train"

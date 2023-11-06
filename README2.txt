@@ -33,7 +33,6 @@ TO DO
 -which part of the model is under LORA ?
 -Using higher lr for encoder and lower for decoder?
 -pad_to_multiple_of ?
-- add eos_token -> neural_signal</s><s>sentence
 -data augmentation by choosing subset of channels?
 
 OBS

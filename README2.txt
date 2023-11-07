@@ -34,6 +34,7 @@ TO DO
 -Using higher lr for encoder and lower for decoder?
 -pad_to_multiple_of ?
 -data augmentation by choosing subset of channels?
+-penalization proportional to the frequency of the token
 
 OBS
 -Max block and date index has to be specified in NeuralConfig, read from preprocess.py output

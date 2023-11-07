@@ -1,4 +1,5 @@
 import os
+import math
 from typing import List, Optional, Tuple, Dict
 
 from transformers import LlamaPreTrainedModel, LlamaConfig
@@ -28,6 +29,8 @@ class BCI(LlamaPreTrainedModel):
 
         # Architecture
         self.encoder = NeuralEncoder(neural_config)
+        self.stacking = neural_config.stacking
+        self.stack_projector = nn.Linear(neural_config.embed_mult*neural_config.n_channels*neural_config.stacking, llama_config.hidden_size, bias=False)
         self.decoder = LlamaDecoderWithLMHead(llama_config)
 
         # init weights
@@ -36,42 +39,56 @@ class BCI(LlamaPreTrainedModel):
 
     def forward(
             self,
-            input_ids: torch.LongTensor,                # (batch_size, seq_len)
-            attention_mask: torch.FloatTensor,          # (batch_size, seq_len)
-            features: torch.FloatTensor,                # (batch_size, fea_len, n_channels)
-            features_mask: torch.FloatTensor,           # (batch_size, fea_len)
-            features_timestamp: torch.LongTensor,       # (batch_size, fea_len)
-            block_idx: torch.LongTensor,                # (batch_size, fea_len)
-            date_idx: torch.LongTensor,                 # (batch_size, fea_len)
-            labels: Optional[torch.LongTensor] = None,  # (batch_size, seq_len)
+            input_ids:          torch.LongTensor,                   # (batch_size, seq_len)
+            attention_mask:     torch.FloatTensor,                  # (batch_size, seq_len)
+            features:           torch.LongTensor,                   # (batch_size, fea_len, n_channels)
+            features_mask:      torch.LongTensor,                  # (batch_size, fea_len)
+            features_timestamp: torch.LongTensor,                   # (batch_size, fea_len)
+            block_idx:          torch.LongTensor,                   # (batch_size, fea_len)
+            date_idx:           torch.LongTensor,                   # (batch_size, fea_len)
+            labels:             Optional[torch.LongTensor] = None,  # (batch_size, seq_len)
             **kwargs, # added for compatibility with hf model.generate
 
         ) -> CausalLMOutputWithPast:
 
         # Encode neural signal
-        neural_embeds = self.encoder(features, features_mask, features_timestamp, block_idx, date_idx) # (batch_size, lat_len, hidden_size)
+        features_embeds = self.encoder(features, features_mask, features_timestamp, block_idx, date_idx) # (batch_size, fea_len, hidden_size)
+        B, T, n = features_embeds.size()
+
+        # Pad to be evenly stacked
+        if T % self.stacking != 0:
+            new_fea_len = math.ceil(T / self.stacking) * self.stacking
+            features_embeds = torch.cat((torch.zeros(B, new_fea_len - T, n).to(features_embeds.device, features_embeds.dtype), features_embeds), 1)
+            features_mask = torch.cat((torch.zeros(B, new_fea_len - T).to(features_mask.device, features_mask.dtype), features_mask), 1).to(features_mask.dtype)
+            T = new_fea_len
+        
+        # Stack and project
+        features_embeds = features_embeds.view(B,T//self.stacking,n*self.stacking)
+        features_embeds = self.stack_projector(features_embeds)
+        features_mask = features_mask.view(B, T//self.stacking, self.stacking)
+        features_mask = (features_mask.sum(-1) == self.stacking).to(attention_mask.dtype) # only keep new features that contain no padding
+
 
         # Embed tokens of sentence
         sentence_embeds = self.decoder.transformer.embed_tokens(input_ids)  # (batch_size, seq_len, hidden_size)
 
         # Prepare inputs for decoder
-        neural_mask = torch.ones(neural_embeds.shape[:2], device=attention_mask.device, dtype=attention_mask.dtype)
-        inputs_embeds = torch.cat((neural_embeds, sentence_embeds), -2)   # (batch_size, lat+seq_len, hidden_size)
-        attention_mask = torch.cat((neural_mask, attention_mask), -1)     # (batch_size, lat+seq_len, hidden_size)
+        inputs_embeds = torch.cat((features_embeds, sentence_embeds), 1)   # (batch_size, fea+seq_len, hidden_size)
+        attention_mask = torch.cat((features_mask, attention_mask), 1)   # (batch_size, fea+seq_len)
 
         # Forward decoder
         logits = self.decoder(  
             inputs_embeds=inputs_embeds,
             attention_mask=attention_mask,
-        )   # (batch_size, lat+seq_len, vocab_size)
+        )   # (batch_size, fea+seq_len, vocab_size)
         
         loss = None
         if labels is not None:
             # Add features mask to match sizes
             labels = torch.cat((
-                        torch.ones(neural_embeds.shape[:2], device=labels.device, dtype=labels.dtype)*(-100), 
+                        torch.ones(features_embeds.shape[:2], device=labels.device, dtype=labels.dtype)*(-100), 
                         labels
-                    ), -1)          # (batch_size, lat+seq_len)
+                    ), 1)          # (batch_size, fea+seq_len)
 
             # Shift so that tokens < n predict n
             shift_logits = logits[..., :-1, :].contiguous()
@@ -94,65 +111,26 @@ class BCI(LlamaPreTrainedModel):
 
     ## LOADING METHODS ##
 
-    # Wrap from_pretrained method to set _is_peft and deal with neural_config. If neural_config is not 
-    # provided, it will look for it in the checkpoint folder. This will raise an error when loading the llama
-    # checkpoint 
+    # Wrap from/save_pretrained method to set _is_peft and deal with neural_config. When neural_config is not
+    # found, it is assumed that the state_dict doesn't contain the weights of an encoder and it is expected
+    # to see a message from hf initializing the encoder weights.
     @classmethod
-    def from_pretrained(cls, model_name_or_path, neural_config=None, **kwargs):
-        if neural_config is None:
-            neural_config_file = os.path.join(model_name_or_path, "neural_config.bin")
-            neural_config = torch.load(neural_config_file) if neural_config is None else NeuralConfig()
-        model = super().from_pretrained(model_name_or_path, neural_config, **kwargs)
+    def from_pretrained(cls, path_to_model, neural_config = None, **kwargs):
+        
+        print(f"Loading model from {path_to_model}")
+
+        neural_config_file = os.path.join(path_to_model, "neural_config.bin")
+        if os.path.isfile(neural_config_file):
+            neural_config = torch.load(neural_config_file)
+        else:
+            neural_config = NeuralConfig() if neural_config is None else neural_config
+
+        model = super().from_pretrained(path_to_model, neural_config, **kwargs)
         model._is_peft = False
 
         return model
 
-    # Load pertrained model and create peft adapter. If neural_config is not provided, it will look for it in the
-    # checkpoint folder. This will raise an error when loading the llama checkpoint 
-    @classmethod
-    def peft_from_pretrained(cls, model_name_or_path, peft_config, neural_config=None, **kwargs):
 
-        # Create BCI model and load Llama2 weights to decoder and lm_head
-        model = cls.from_pretrained(model_name_or_path, neural_config, **kwargs)
-        
-        # Add peft adapter to the decoder
-        model.decoder = PeftModelForBCI(model.decoder, peft_config)
-        model._is_peft = True
-
-        return model
-
-    # Load pretrained adapter. If neural_config is not provided, it will look for it in the adapter folder. 
-    @classmethod
-    def peft_from_adapter(cls, model_name_or_path, path_to_adapter, is_trainable=False, adapter_name="default", neural_config=None, **kwargs):
-        
-        neural_config_file = os.path.join(path_to_adapter, "neural_config.bin")
-        assert os.path.isfile(neural_config_file), """Attempting to load pretrained config for NeuralEncoder but 
-        neural_config was not found in {}""".format(path_to_adapter)
-        neural_config = torch.load(neural_config_file) if neural_config is None else neural_config
-
-        # Load pretrained Llama model
-        model = cls.from_pretrained(model_name_or_path, neural_config, **kwargs)
-
-        # Load trained weights for encoder
-        print(f"Loading encoder weights from {path_to_adapter}")
-        model.encoder.load_state_dict(torch.load(os.path.join(path_to_adapter,"encoder.bin")))
-
-        # Get peft config
-        peft_config = PeftConfig.from_pretrained(path_to_adapter)
-        peft_config.inference_mode = not is_trainable
-
-        # Load trained adapter for decoder
-        print(f"Loading decoder adapter from {path_to_adapter}")
-        model.decoder = PeftModelForBCI(model.decoder, peft_config)
-        model.decoder.load_adapter(path_to_adapter, adapter_name, is_trainable=is_trainable)
-        model._is_peft = True
-
-        return model
-
-
-    ## SAVING METHODS ##
-
-    # Wrap save_pretrained method to avoid issues with the adapter and deal with neural_config
     def save_pretrained(self, path_to_model, **kwargs):
         if self._is_peft:
             raise Exception("Peft adapter is loaded, merge before saving")
@@ -163,41 +141,84 @@ class BCI(LlamaPreTrainedModel):
         torch.save(self.neural_config, os.path.join(path_to_model, "neural_config.bin"))
         super().save_pretrained(path_to_model, **kwargs)
 
+        print(f"Model saved to  {path_to_model}")
 
-    # Save trained model and adapter
+
+    # ENCODER METHODS
+
+    def load_encoder(self, path_to_encoder):
+        print(f"Loading encoder from {path_to_encoder}")
+        neural_config_file = os.path.join(path_to_model, "neural_config.bin")
+        neural_config = torch.load(neural_config_file)
+
+        self.encoder = NeuralEncoder(neural_config)
+        self.encoder.load_state_dict(torch.load(os.path.join(path_to_encoder,"encoder.bin")))
+
+    def save_encoder(self, path_to_encoder):
+        torch.save(self.neural_config, os.path.join(path_to_encoder, "neural_config.bin"))
+        torch.save(self.encoder.state_dict(), os.path.join(path_to_encoder,"encoder.bin"))
+        print(f"Encoder saved to  {path_to_encoder}")
+
+    ## ADAPTER METHODS ##
+
+    def load_adapter(self, path_to_adapter, is_trainable=False, adapter_name="default", **kwargs):
+        
+        # Get peft config
+        peft_config = PeftConfig.from_pretrained(path_to_adapter)
+        peft_config.inference_mode = not is_trainable
+
+        # Load trained adapter for decoder
+        self.decoder = PeftModelForBCI(self.decoder, peft_config)
+        self.decoder.load_adapter(path_to_adapter, adapter_name, is_trainable=is_trainable)
+        self._is_peft = True
+
+        print(f"Adapter loaded from {path_to_adapter}")
+
+
+    def create_adapter(self, peft_config):
+        if self._is_peft:
+            raise Exception("Peft adapter already loaded")
+
+        self.decoder = PeftModelForBCI(self.decoder, peft_config)
+        self._is_peft = True
+
+        print("Adapter created")
+
+
     def save_adapter(self, path_to_adapter, **kwargs):
         
         if not self._is_peft:
-            raise Exception("No peft adapter, model was not saved")
+            raise Exception("No peft adapter loaded")
         
         if not os.path.exists(path_to_adapter):
             os.makedirs(path_to_adapter)
 
-        torch.save(self.neural_config, os.path.join(path_to_adapter, "neural_config.bin"))
-        torch.save(self.encoder.state_dict(), os.path.join(path_to_adapter,"encoder.bin"))
         self.decoder.save_pretrained(path_to_adapter, **kwargs)
+        print(f"Adapter saved to  {path_to_adapter}")
 
 
-    ## ADAPTER METHODS ##
-
-    # Merge adapter with weights of decoder
-    def merge_decoder(self):
+    def merge_adapter(self):
         if not self._is_peft:
-            print("No peft adapter loaded, nothing was merged.")
-            return
+            raise Exception("No peft adapter loaded")
         
         self.decoder = self.decoder.merge_and_unload()
         self._is_peft = False
 
-    # Remove peft adapter
+        print("Adapter merged")
+
+
     def unload_adapter(self):
         if not self._is_peft:
-            print("No peft adapter loaded, nothing was unloaded.")
+            raise Exception("No peft adapter loaded")
             return
         self.decoder = self.decoder.unload()
         self._is_peft = False
 
+        print("Adapter unloaded")
+
    
+
+    ## INITIALIZATION ##
 
     # Override default method for initialization. This is called on parameters that are not in the saved state_dict,
     # i.e., the encoder parameters and the new part of the lm (because of resizing)
@@ -239,4 +260,5 @@ class BCI(LlamaPreTrainedModel):
             }
         
         return model_inputs
+
 

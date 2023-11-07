@@ -163,7 +163,7 @@ model_path = "/n/home07/djimenezbeneto/lab/models/BCI"
 proc_path = "/n/home07/djimenezbeneto/lab/datasets/BCI/processed.data"
 
 
-tokenizer = AutoTokenizer.from_pretrained(model_path, add_bos_token=False, add_eos_token=False)
+tokenizer = AutoTokenizer.from_pretrained(model_path, add_bos_token=False, add_eos_token=False, padding_side="right")
 
 prompt = ""
 feature="tx1"

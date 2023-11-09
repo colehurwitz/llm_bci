@@ -27,4 +27,5 @@ lora:
   dropout: 0.1
 
 
-bci: include:configs/default_bci_config.yaml
+bci: include:configs/default_bci_config.yaml  # this could be null as the bci model already loads this default config
+# bci: null

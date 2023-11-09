@@ -17,11 +17,11 @@ bci:
 trainer:
   num_epochs: 25
   save_epochs: [1,2,5,10,15,20]
-  save_every: None
+  save_every: null
   train_len: 12
   test_len: 12
-  test_batch_size: 6
-  train_batch_size: 24
+  test_batch_size: 3
+  train_batch_size: 3
 
 optimizer:
   lr: 3.e-4

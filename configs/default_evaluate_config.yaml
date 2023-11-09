@@ -6,12 +6,12 @@ path_to_model: /n/home07/djimenezbeneto/lab/models/BCI
 checkpoint_dir: /n/home07/djimenezbeneto/lab/BCI/checkpoints
 ft_dir: /n/home07/djimenezbeneto/lab/BCI/ft_models
 
-checkpoint_epoch: None
+checkpoint_epoch: null
 
-eval_len: None
+eval_len: null
 eval_batch_size: 64
 
 generation:
   max_new_tokens: 16
-  do_sample: False
+  do_sample: false
 

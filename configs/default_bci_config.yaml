@@ -1,8 +1,8 @@
 # Project to llama hidden space
 stacking: 32
-projector_bias: False
+projector_bias: false
 loss_reduction: "sum"
 
-neural_config: None         # imported from default_neural_config in bci.from_pretrained()
+neural_config:  include:configs/default_neural_config.yaml
 
 

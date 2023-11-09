@@ -130,7 +130,7 @@ class BCI(LlamaPreTrainedModel):
 
         # Prepare default config
         bci_default_config = update_config(DEFAULT_BCI_CONFIG_FILE, None)
-        bci_default_config["neural_config"] = update_config(DEFAULT_NEURAL_CONFIG_FILE, None)
+
 
         # Update default config with pretrained config or user config
         bci_config_file = os.path.join(path_to_model, "bci_config.yaml")

@@ -29,9 +29,8 @@ def reset_seeds(seed):
 
 def main(args):
     
-    config = update_config(DEFAULT_CONFIG_FILE, args.config_file)
+    config = update_config(DEFAULT_CONFIG_FILE, args.config_file if args.config_file != "none" else None) 
     config = update_config(config, config_from_kwargs(args.kwargs))
-
 
     accelerator = Accelerator()
     reset_seeds(config.seed)
@@ -182,7 +181,7 @@ def main(args):
         accelerator.print(f"{epoch=}: {train_epoch_ppl=} {train_epoch_loss=} {train_epoch_wer=} {test_epoch_ppl=} {test_epoch_loss=} {test_epoch_wer=}")
 
         # Save checkpoints (not merged because we don't want to delete the adapter yet)
-        must_save = config.trainer.save_epochs is not None and epoch%config.trainer.save_epochs == 0 or epoch in config.trainer.save_epochs
+        must_save = (config.trainer.save_every is not None and epoch%config.trainer.save_every == 0) or epoch in config.trainer.save_epochs
         if must_save:
             accelerator.print(f"Saving checkpoint at epoch {epoch}")
             model.save_adapter(os.path.join(checkpoint_dir,f"EP{epoch}"))
@@ -199,7 +198,7 @@ def main(args):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument('-c', '--config_file', type = str, required=True, help="File (.yaml) with configuration for finetuning")
+    parser.add_argument('-c', '--config_file', type = str, help="File (.yaml) with configuration for finetuning", default="none")
     parser.add_argument('-k', '--kwargs', nargs='*', action=ParseKwargs)
     args = parser.parse_args()
 

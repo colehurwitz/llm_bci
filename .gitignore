@@ -1,3 +1,6 @@
+# My files
+sync_bci.sh
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[cod]

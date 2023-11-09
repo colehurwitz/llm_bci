@@ -7,15 +7,12 @@ checkpoint_dir: /n/home07/djimenezbeneto/lab/BCI/checkpoints
 ft_dir: /n/home07/djimenezbeneto/lab/BCI/ft_models
 log_dir: /n/home07/djimenezbeneto/lab/BCI/logs
 
-# bci:
-  # neural_config:
-
 trainer:
   num_epochs: 25
   save_epochs: [1,2,5,10,15,20]
-  save_every: None
-  train_len: None
-  test_len: None
+  save_every: null
+  train_len: null
+  test_len: null
   test_batch_size: 64
   train_batch_size: 256
 
@@ -28,3 +25,6 @@ lora:
   r: 8
   alpha: 32
   dropout: 0.1
+
+
+bci: include:configs/default_bci_config.yaml

@@ -5,6 +5,8 @@ import argparse
 class DictConfig(dict):
 
     def __getattr__(self, name):
+        if name not in self.keys():
+            return None
         value = self[name]
         if isinstance(value, dict):
             value = DictConfig(value)
@@ -14,12 +16,20 @@ class DictConfig(dict):
         return super()
 
 
+
 # Recursively update the entries of the config dict
 def update_config_rec(new_config, config):
+    if isinstance(config, str) and config.split(":")[0] == "include":
+        config = yaml.safe_load(open(config.split(":")[1],"r"))
+
+    if isinstance(new_config, str) and new_config.split(":")[0] == "include":
+        new_config = yaml.safe_load(open(new_config.split(":")[1],"r"))
 
     if isinstance(config, dict):
+        if new_config is None:
+            new_config = {}
         for field in config:
-            if not field in new_config or new_config[field] is None:
+            if not field in new_config:
                 new_config[field] = {}
             new_config[field] = update_config_rec(new_config[field], config[field])
     else:
@@ -36,8 +46,7 @@ def update_config(default_config, config = None):
     if isinstance(default_config, str):
         default_config = yaml.safe_load(open(default_config,"r"))
 
-    if config is None:
-        return DictConfig(default_config)
+    config = default_config if config is None else config
 
     if isinstance(config, str):
         config = yaml.safe_load(open(config,"r"))

@@ -1,5 +1,6 @@
 import os
 import math
+import yaml
 from typing import List, Optional, Tuple, Dict
 
 from transformers import LlamaPreTrainedModel, LlamaConfig
@@ -11,27 +12,33 @@ import torch.nn.functional as F
 
 from models.peft_wrapper import PeftModelForBCI, PeftConfig
 from models.llama_decoder import LlamaDecoderWithLMHead
-from models.neural_encoder import NeuralEncoder, NeuralConfig
+from models.neural_encoder import NeuralEncoder
 
+from utils.config_utils import DictConfig, create_and_update_config
 
+DEFAULT_BCI_CONFIG_FILE = "configs/default_bci_config.yaml"
+DEFAULT_NEURAL_CONFIG_FILE = "configs/default_neural_config.yaml"
 
 # BCI class. Subclass  of LlamaPretrainedModel to acces all the hf code (from_pretained, etc)
 class BCI(LlamaPreTrainedModel):
 
-    def __init__(self, llama_config: LlamaConfig, neural_config: NeuralConfig):
+    def __init__(self, llama_config: LlamaConfig, bci_config: DictConfig):
         super().__init__(llama_config)
 
         # Configuration
-        self.neural_config = neural_config
+        self.bci_config = bci_config
+        self.neural_config = bci_config.neural_config
+        self.llama_config = llama_config
+
         _no_split_modules = ["LlamaDecoderLayer", "NeuralEncoderLayer"]  # Override llama default because we may want to add the encoder or the encoder layer module here
         self.vocab_size = llama_config.vocab_size
         self._is_peft = False
 
         # Architecture
-        self.encoder = NeuralEncoder(neural_config)
-        self.stacking = neural_config.stacking
-        self.stack_projector = nn.Linear(neural_config.embed_mult*neural_config.n_channels*neural_config.stacking, llama_config.hidden_size, bias=False)
-        self.decoder = LlamaDecoderWithLMHead(llama_config)
+        self.encoder = NeuralEncoder(self.neural_config)
+        self.stacking = self.bci_config.stacking
+        self.stack_projector = nn.Linear(self.neural_config.embed_mult*self.neural_config.n_channels*self.stacking, self.llama_config.hidden_size, bias=self.bci_config.projector_bias)
+        self.decoder = LlamaDecoderWithLMHead(self.llama_config)
 
         # init weights
         self.post_init() # from hf
@@ -68,7 +75,6 @@ class BCI(LlamaPreTrainedModel):
         features_mask = features_mask.view(B, T//self.stacking, self.stacking)
         features_mask = (features_mask.sum(-1) == self.stacking).to(attention_mask.dtype) # only keep new features that contain no padding
 
-
         # Embed tokens of sentence
         sentence_embeds = self.decoder.transformer.embed_tokens(input_ids)  # (batch_size, seq_len, hidden_size)
 
@@ -82,6 +88,9 @@ class BCI(LlamaPreTrainedModel):
             attention_mask=attention_mask,
         )   # (batch_size, fea+seq_len, vocab_size)
         
+
+
+
         loss = None
         if labels is not None:
             # Add features mask to match sizes
@@ -115,17 +124,15 @@ class BCI(LlamaPreTrainedModel):
     # found, it is assumed that the state_dict doesn't contain the weights of an encoder and it is expected
     # to see a message from hf initializing the encoder weights.
     @classmethod
-    def from_pretrained(cls, path_to_model, neural_config = None, **kwargs):
+    def from_pretrained(cls, path_to_model, bci_config_file=None, **kwargs):
         
         print(f"Loading model from {path_to_model}")
 
-        neural_config_file = os.path.join(path_to_model, "neural_config.bin")
-        if os.path.isfile(neural_config_file):
-            neural_config = torch.load(neural_config_file)
-        else:
-            neural_config = NeuralConfig() if neural_config is None else neural_config
+        pretrained_bci_config = os.path.join(path_to_model, "bci_config.yaml")
+        bci_config_file = pretrained_bci_config if os.path.isfile(pretrained_bci_config) else bci_config_file
+        bci_config = create_and_update_config(DEFAULT_BCI_CONFIG_FILE, bci_config_file)
 
-        model = super().from_pretrained(path_to_model, neural_config, **kwargs)
+        model = super().from_pretrained(path_to_model, bci_config, **kwargs)
         model._is_peft = False
 
         return model
@@ -134,35 +141,39 @@ class BCI(LlamaPreTrainedModel):
     def save_pretrained(self, path_to_model, **kwargs):
         if self._is_peft:
             raise Exception("Peft adapter is loaded, merge before saving")
+        print(f"Saving model to  {path_to_model}")
 
         if not os.path.exists(path_to_model):
             os.makedirs(path_to_model)
 
-        torch.save(self.neural_config, os.path.join(path_to_model, "neural_config.bin"))
+        yaml.dump(dict(self.bci_config), open(os.path.join(path_to_model, "bci_config.yaml"), "w"), default_flow_style=False)
         super().save_pretrained(path_to_model, **kwargs)
 
-        print(f"Model saved to  {path_to_model}")
-
+        
 
     # ENCODER METHODS
 
     def load_encoder(self, path_to_encoder):
         print(f"Loading encoder from {path_to_encoder}")
-        neural_config_file = os.path.join(path_to_model, "neural_config.bin")
-        neural_config = torch.load(neural_config_file)
+        neural_config_file = os.path.join(path_to_encoder, "neural_config.yaml")
+        neural_config = create_and_update_config(DEFAULT_NEURAL_CONFIG_FILE, neural_config_file)
 
         self.encoder = NeuralEncoder(neural_config)
         self.encoder.load_state_dict(torch.load(os.path.join(path_to_encoder,"encoder.bin")))
 
+
     def save_encoder(self, path_to_encoder):
-        torch.save(self.neural_config, os.path.join(path_to_encoder, "neural_config.bin"))
+        print(f"Saving encoder to  {path_to_encoder}")
+        yaml.dump(dict(self.neural_config), open(os.path.join(path_to_encoder, "neural_config.yaml"),"w"), default_flow_style=False)
         torch.save(self.encoder.state_dict(), os.path.join(path_to_encoder,"encoder.bin"))
-        print(f"Encoder saved to  {path_to_encoder}")
+        
 
     ## ADAPTER METHODS ##
 
     def load_adapter(self, path_to_adapter, is_trainable=False, adapter_name="default", **kwargs):
         
+        print(f"Loading adapter from {path_to_adapter}")
+
         # Get peft config
         peft_config = PeftConfig.from_pretrained(path_to_adapter)
         peft_config.inference_mode = not is_trainable
@@ -172,49 +183,46 @@ class BCI(LlamaPreTrainedModel):
         self.decoder.load_adapter(path_to_adapter, adapter_name, is_trainable=is_trainable)
         self._is_peft = True
 
-        print(f"Adapter loaded from {path_to_adapter}")
-
 
     def create_adapter(self, peft_config):
         if self._is_peft:
             raise Exception("Peft adapter already loaded")
+        print("Creating new adapter")
 
         self.decoder = PeftModelForBCI(self.decoder, peft_config)
         self._is_peft = True
-
-        print("Adapter created")
 
 
     def save_adapter(self, path_to_adapter, **kwargs):
         
         if not self._is_peft:
             raise Exception("No peft adapter loaded")
-        
+        print(f"Saving adapter to  {path_to_adapter}")
+
         if not os.path.exists(path_to_adapter):
             os.makedirs(path_to_adapter)
 
         self.decoder.save_pretrained(path_to_adapter, **kwargs)
-        print(f"Adapter saved to  {path_to_adapter}")
-
+        
 
     def merge_adapter(self):
         if not self._is_peft:
             raise Exception("No peft adapter loaded")
-        
+        print("Merging adapter")
+
         self.decoder = self.decoder.merge_and_unload()
         self._is_peft = False
-
-        print("Adapter merged")
 
 
     def unload_adapter(self):
         if not self._is_peft:
             raise Exception("No peft adapter loaded")
-            return
+
+        print("Unloading adapter")
         self.decoder = self.decoder.unload()
         self._is_peft = False
 
-        print("Adapter unloaded")
+       
 
    
 

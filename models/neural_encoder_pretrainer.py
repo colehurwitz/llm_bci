@@ -3,16 +3,13 @@ import torch.nn as nn
 
 from models.neural_encoder import NeuralEncoder
 
-class NeuralPretrainConfig:
+from utils.config_utils import DictConfig
 
-    rate_dropout = 0.2
-    inter_dim = 16
-
-    use_lograte = True
+    
 
 class NeuralEncoderPretrainer(nn.Module):
 
-    def __init__(self, encoder: NeuralEncoder, config: NeuralPretrainConfig):
+    def __init__(self, encoder: NeuralEncoder, config: DictConfig):
         super().__init__()
 
 
@@ -38,5 +35,4 @@ class NeuralEncoderPretrainer(nn.Module):
             block_idx:          torch.LongTensor,   # (batch_size, fea_len)
             date_idx:           torch.LongTensor,   # (batch_size, fea_len)
         ) -> torch.FloatTensor:                     # (1,)
-
         

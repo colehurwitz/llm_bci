@@ -7,49 +7,9 @@ import torch.nn as nn
 
 from transformers.activations import ACT2FN
 
+from utils.config_utils import DictConfig
+
 EMBED_MODES = "linear, identity, embed"
-
-class NeuralConfig:
-    
-    # Data 
-    n_channels = 256
-    n_blocks = 25
-    n_dates = 24
-    max_spikes = 60
-    context_forward = 25
-    context_backward = 50
-
-    # Init
-    spike_log_init = False
-    fixup_init = False
-
-    # Architecture
-    embed_mult = 1
-    embed_mode = "embed"
-    embed_bias = False
-    embed_gate = False
-    embed_act = "sigmoid"
-    embed_context = False
-
-    use_scalenorm = False
-    n_layers = 5
-    n_heads = 2
-    hidden_act = "silu"
-    attention_bias = False
-    mlp_bias = False
-
-    # Regularization
-    embed_dropout = 0.3
-    layers_dropout = 0.3
-
-    # Positional encoding
-    use_rope = False
-    rope_theta = 10000.0
-    max_T = 1024
-
-
-    # Project to llama hidden space
-    stacking = 16
 
 
 
@@ -158,10 +118,8 @@ class NeuralAttention(nn.Module):
             q, k = apply_rotary_pos_emb(q, k, timestamp, self.cos, self.sin, 1)  # (B,n_heads,T,head_size)
 
         # Compute attention efficiently
-        out = self.flash_attention(q, k, v, attn_mask=attn_mask)            # (B,n_heads,T,head_size)
-        
-        print("attn", torch.any(out.isnan()), torch.any(out.isinf()))
-        out = out.transpose(1, 2).contiguous().view(B,T, self.hidden_size)  # (B, T, hidden_size)
+        out = self.flash_attention(q, k, v, attn_mask=attn_mask)                 # (B,n_heads,T,head_size)
+        out = out.transpose(1, 2).contiguous().view(B,T, self.hidden_size)       # (B, T, hidden_size)
 
         return self.out_proj(self.dropout(out)) # (B, T, hidden_size)
 
@@ -170,7 +128,7 @@ class NeuralAttention(nn.Module):
 # Encoder layer: bidirectional self-attention + mlp
 class NeuralEncoderLayer(nn.Module):
     
-    def __init__(self, idx, config: NeuralConfig):
+    def __init__(self, idx, config: DictConfig):
         super().__init__()
 
         self.idx = idx
@@ -204,12 +162,10 @@ class NeuralEncoderLayer(nn.Module):
 # Encoder for time binned neural data
 class NeuralEncoder(nn.Module):
 
-    def __init__(self, config: NeuralConfig):
+    def __init__(self, config: DictConfig):
         super().__init__()
 
         self.hidden_size = config.embed_mult * config.n_channels
-        self.context_forward = config.context_forward
-        self.context_backward = config.context_backward
 
         # Embed neural data
         if config.embed_mode == "linear":
@@ -236,7 +192,7 @@ class NeuralEncoder(nn.Module):
                 ACT2FN[config.embed_act],
             )
 
-        # Embedding scaler
+        # Embedding scale
         self.scale = math.sqrt(self.hidden_size)
         
 
@@ -255,6 +211,9 @@ class NeuralEncoder(nn.Module):
         # Regularization
         self.dropout = nn.Dropout(config.embed_dropout)
 
+        # Context span mask
+        context_mask = self.create_context_mask(config.context_forward, config.context_backward, config.max_T)
+        self.register_buffer("context_mask", context_mask, persistent=False)
 
         # Attention+MLP layers
         self.n_layers = config.n_layers
@@ -268,7 +227,7 @@ class NeuralEncoder(nn.Module):
     def forward(
             self, 
             features:           torch.LongTensor,   # (batch_size, fea_len, n_channels)
-            features_mask:      torch.LongTensor,  # (batch_size, fea_len)
+            features_mask:      torch.LongTensor,   # (batch_size, fea_len)
             features_timestamp: torch.LongTensor,   # (batch_size, fea_len)
             block_idx:          torch.LongTensor,   # (batch_size, fea_len)
             date_idx:           torch.LongTensor,   # (batch_size, fea_len)
@@ -278,13 +237,11 @@ class NeuralEncoder(nn.Module):
         
         # Embed neural data
         x = self.embed_spikes(features)
+        print
         if self.embed_gate:
             x = x * self.gate_spikes(features)
         x = x * self.scale
         
-        context_mask = self.create_context_mask(x)
-        mask = context_mask & features_mask.unsqueeze(1).expand(B,T,T)
-
         # Embed position
         if not self.use_rope:
             x += self.embed_pos(features_timestamp)
@@ -294,12 +251,18 @@ class NeuralEncoder(nn.Module):
             x += self.embed_block(block_idx) + self.embed_date(date_idx)
 
         x = self.dropout(x)
+        
+        # Prepare attention mask
+        context_mask = self.context_mask[:T,:T].to(x.device).unsqueeze(0).expand(B,T,T)
+        features_mask = features_mask.unsqueeze(1).expand(B,T,T)
+        self_mask = torch.eye(T).to(x.device, context_mask.dtype) # hack so that even padded features attend to themselves and avoid attention issues
+        mask = self_mask | (context_mask & features_mask) if context_mask is not None else features_mask
+        
 
-        print("1", torch.any(x.isnan()), torch.any(x.isinf()))
+        
         # Forward attention layers
         for idx, layer in enumerate(self.layers):
             x = layer(x, mask=mask, timestamp=features_timestamp if self.use_rope else None)
-            print(f"layer_{idx}", torch.any(x.isnan()), torch.any(x.isinf()))
 
         return x
 
@@ -342,21 +305,21 @@ class NeuralEncoder(nn.Module):
     # Limit context for encoding
     def create_context_mask(
             self, 
-            x:      torch.FloatTensor   # (batch_size, fea_len, hidden_dim)
-        ) -> torch.LongTensor:          # (batch_size, fea_len, fea_len )
+            context_forward,
+            context_backward,
+            max_T,  
+        ) -> torch.LongTensor:          # (max_fea_len, max_fea_len )
 
-        if self.context_forward == -1 and self.context_backward == -1:
+        if context_forward == -1 and context_backward == -1:
             return None
 
-        B, T, _ = x.size()      # batch_size, fea_len
-
-        context_forward = self.context_forward if self.context_forward >= 0 else T
-        mask = (torch.triu(torch.ones(T, T, device=x.device), diagonal=-context_forward) == 1).transpose(0, 1)
-        if self.context_backward > 0:
-            back_mask = (torch.triu(torch.ones(T, T, device=x.device), diagonal=-self.context_backward) == 1)
+        context_forward = context_forward if context_forward >= 0 else max_T
+        mask = (torch.triu(torch.ones(max_T, max_T), diagonal=-context_forward) == 1).transpose(0, 1)
+        if context_backward > 0:
+            back_mask = (torch.triu(torch.ones(max_T, max_T), diagonal=-context_backward) == 1)
             mask = mask & back_mask
 
-        return mask.unsqueeze(0).expand(B,T,T)
+        return mask
 
 
 

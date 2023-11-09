@@ -18,7 +18,7 @@ def main():
 
     path_to_model = "/n/home07/djimenezbeneto/lab/models/BCI"
     checkpoint_path = "/n/home07/djimenezbeneto/lab/BCI/checkpoints/NDT1/EP1"
-    ft_path = "/n/home07/djimenezbeneto/lab/BCI/ft_models/NDT1
+    ft_path = "/n/home07/djimenezbeneto/lab/BCI/ft_models/NDT1"
     
     
     proc_data_path = "/n/home07/djimenezbeneto/lab/datasets/BCI/processed.data"
@@ -33,7 +33,7 @@ def main():
     tokenizer = AutoTokenizer.from_pretrained(path_to_model, padding_side='right')
 
     # Load merged model
-    # model = BCI.from_pretrained(path_to_ft)
+    # model = BCI.from_pretrained(ft_path)
 
     # Load from checkpoint
     model = BCI.from_pretrained(path_to_model)
@@ -48,7 +48,7 @@ def main():
     pad_id = tokenizer.eos_token_id
 
     # Eval DataLoader
-    data = torch.load(proc_data_path)["test"]
+    data = torch.load(proc_data_path)["train"]
     eval_dataset = BCIDataset(data, split="eval", len=64)
     eval_dataloader = DataLoader(
         eval_dataset, collate_fn=partial(pad_collate_fn,pad_id,split), batch_size=batch_size, pin_memory=True
@@ -72,6 +72,7 @@ def main():
             all_preds += preds
             all_sentences += sentences
     
+    torch.save({"preds": all_preds, "targets": all_sentences}, "preds.pt")
     for p, t in zip(all_preds[:10], all_sentences[:10]):
         print("Prediction: {}\nTarget: {}".format(p, t.replace(tokenizer.eos_token,"").replace(tokenizer.bos_token,"").strip()))
 

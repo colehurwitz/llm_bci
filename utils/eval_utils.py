@@ -18,6 +18,11 @@ def word_edit_distance(pred,target):
 # Compute word error rate over a list of predicitons and targets
 def word_error_rate(preds, targets):
 
+    if not isinstance(preds, list):
+        preds = [preds]
+    if not isinstance(targets, list):
+        targets = [targets]
+
     assert len(preds) == len(targets), "Lenghts of prediction and target lists don't match"
     errors = 0
     words  = 0

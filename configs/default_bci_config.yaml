@@ -1,0 +1,46 @@
+# Project to llama hidden space
+stacking: 32
+projector_bias: False
+
+neural_config:
+  # Data 
+  n_channels: 256
+  n_blocks: 25
+  n_dates: 24
+  max_spikes: 60
+  context_forward: 15
+  context_backward: 30
+
+  # Init
+  spike_log_init: True
+  fixup_init: True
+
+  # Neural Encoder Architecture
+  embed_mult: 1
+  embed_mode: "embed"
+  embed_bias: False
+  embed_gate: False
+  embed_act: "sigmoid"
+  embed_context: False
+
+  use_scalenorm: False
+  n_layers: 5
+  n_heads: 2
+  hidden_act: "silu"
+  attention_bias: False
+  mlp_bias: False
+
+
+  # Neural encoder regularization
+  embed_dropout: 0.6
+  layers_dropout: 0.6
+
+  # Positional encoding
+  use_rope: False
+  rope_theta: 10000.0
+  max_T: 1024
+
+
+
+
+

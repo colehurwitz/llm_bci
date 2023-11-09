@@ -14,7 +14,6 @@ from peft import LoraConfig
 
 
 from models.bci import BCI
-from models.neural_encoder import NeuralConfig
 from utils.data_utils import BCIDataset, pad_collate_fn
 
 def reset_seeds(seed):
@@ -33,20 +32,19 @@ def main():
     seed = 1
     proc_data_path = "/n/home07/djimenezbeneto/lab/datasets/BCI/processed.data"
     split = "train"
-    train_len = 64
-    test_len = 64
+    train_len = None
+    test_len = None
     batch_size = 64
     lr = 3e-4
     wd = 0.01
-    num_epochs = 2
+    warmup_ratio = 0.05
+    num_epochs = 50
     save_epochs = [1,5,10,15,25,35]
 
     peft_config = LoraConfig(
         inference_mode=False, r=8, lora_alpha=32, lora_dropout=0.1,
-        target_modules=["q_proj","v_proj","k_proj"]
+        target_modules=["q_proj","v_proj","k_proj","o_proj"]
     )
-    
-    neural_config = NeuralConfig()
 
     reset_seeds(seed)
 
@@ -54,7 +52,7 @@ def main():
     tokenizer = AutoTokenizer.from_pretrained(path_to_model, padding_side='right')
 
     # Load model with peft adapter for decoder
-    model = BCI.from_pretrained(path_to_model, neural_config=neural_config)  
+    model = BCI.from_pretrained(path_to_model)  
     model.create_adapter(peft_config) 
 
     accelerator.print(model)
@@ -89,7 +87,7 @@ def main():
 
     lr_scheduler = get_linear_schedule_with_warmup(
         optimizer=optimizer,
-        num_warmup_steps=0,
+        num_warmup_steps=round(warmup_ratio * len(train_dataloader) * num_epochs),
         num_training_steps=(len(train_dataloader) * num_epochs),
     )
 
@@ -103,7 +101,7 @@ def main():
     # Train
     all_test_epoch_loss = []
     all_train_epoch_loss = []
-    for epoch in range(num_epochs):
+    for epoch in range(1,num_epochs+1):
         model.train()
         total_loss = 0
         for step, batch in enumerate(tqdm(train_dataloader)):
@@ -134,6 +132,7 @@ def main():
         all_test_epoch_loss.append(test_epoch_loss.item())
         
         if epoch in save_epochs and accelerator.is_main_process:
+            accelerator.print(f"Saving checkpoint at epoch {epoch}")
             model.save_adapter(os.path.join(checkpoint_path,f"EP{epoch}"))
             model.save_encoder(os.path.join(checkpoint_path,f"EP{epoch}"))
 

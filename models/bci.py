@@ -128,14 +128,16 @@ class BCI(LlamaPreTrainedModel):
         
         print(f"Loading model from {path_to_model}")
 
-        bci_default_config = update_config(DEFAULT_BCI_CONFIG_FILE, None, "default_bci_config")
-        bci_default_config.neural_config = update_config(bci_default_config, DEFAULT_NEURAL_CONFIG_FILE, "default_bci_config")
+        # Prepare default config
+        bci_default_config = update_config(DEFAULT_BCI_CONFIG_FILE, None)
+        bci_default_config["neural_config"] = update_config(DEFAULT_NEURAL_CONFIG_FILE, None)
 
+        # Update default config with pretrained config or user config
         bci_config_file = os.path.join(path_to_model, "bci_config.yaml")
-        bci_config_file = bci_config_file if os.path.isfile(bci_config_file) else None
-        bci_config = bci_config if bci_config_file is None else bci_config_file 
-        bci_config = update_config(bci_default_config, bci_config, "bci_config")
-
+        bci_config = bci_config_file if os.path.isfile(bci_config_file) else bci_config
+        bci_config = update_config(bci_default_config, bci_config)
+        
+        # Load with hf method
         model = super().from_pretrained(path_to_model, bci_config, **kwargs)
         model._is_peft = False
 
@@ -160,7 +162,7 @@ class BCI(LlamaPreTrainedModel):
     def load_encoder(self, path_to_encoder):
         print(f"Loading encoder from {path_to_encoder}")
         neural_config_file = os.path.join(path_to_encoder, "neural_config.yaml")
-        neural_config = update_config(DEFAULT_NEURAL_CONFIG_FILE, neural_config_file, "neural_config")
+        neural_config = update_config(DEFAULT_NEURAL_CONFIG_FILE, neural_config_file)
 
         self.encoder = NeuralEncoder(neural_config)
         self.encoder.load_state_dict(torch.load(os.path.join(path_to_encoder,"encoder.bin")))

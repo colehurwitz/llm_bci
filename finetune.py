@@ -15,7 +15,7 @@ from peft import LoraConfig
 
 
 from models.bci import BCI
-from utils.config_utils import create_and_update_config
+from utils.config_utils import update_config, config_from_kwargs, ParseKwargs
 from utils.data_utils import BCIDataset, pad_collate_fn
 from utils.eval_utils import word_error_count
 
@@ -27,9 +27,15 @@ def reset_seeds(seed):
     # torch.backends.cudnn.deterministic=True
     # torch.backends.cudnn.benchmark = False
 
-def main():
+def main(args):
+    
+    config = update_config(DEFAULT_CONFIG_FILE, args.config_file)
+    config = update_config(config, config_from_kwargs(args.kwargs))
+
+
     accelerator = Accelerator()
-    config = update_config(DEFAULT_CONFIG_FILE, args.config_file, "finetune_config")
+    reset_seeds(config.seed)
+    
 
     # Create saving paths
     checkpoint_dir = os.path.join(config.checkpoint_dir,config.savestring)
@@ -44,8 +50,6 @@ def main():
         target_modules=["q_proj"]
     )
 
-    reset_seeds(config.seed)
-    
 
     # Load model with peft adapter for decoder
     model = BCI.from_pretrained(config.path_to_model, config.bci)  
@@ -96,7 +100,7 @@ def main():
 
 
     # Train
-    for epoch in range(1,num_epochs+1):
+    for epoch in range(1,config.trainer.num_epochs+1):
         model.train()
 
         # Train metrics
@@ -178,7 +182,8 @@ def main():
         accelerator.print(f"{epoch=}: {train_epoch_ppl=} {train_epoch_loss=} {train_epoch_wer=} {test_epoch_ppl=} {test_epoch_loss=} {test_epoch_wer=}")
 
         # Save checkpoints (not merged because we don't want to delete the adapter yet)
-        if epoch in config.trainer.save_epochs:
+        must_save = config.trainer.save_epochs is not None and epoch%config.trainer.save_epochs == 0 or epoch in config.trainer.save_epochs
+        if must_save:
             accelerator.print(f"Saving checkpoint at epoch {epoch}")
             model.save_adapter(os.path.join(checkpoint_dir,f"EP{epoch}"))
             model.save_encoder(os.path.join(checkpoint_dir,f"EP{epoch}"))
@@ -194,7 +199,8 @@ def main():
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument('--config_file', type = str, required=True, help="File (.yaml) with configurationfor finetuning")
+    parser.add_argument('-c', '--config_file', type = str, required=True, help="File (.yaml) with configuration for finetuning")
+    parser.add_argument('-k', '--kwargs', nargs='*', action=ParseKwargs)
     args = parser.parse_args()
 
     main(args)

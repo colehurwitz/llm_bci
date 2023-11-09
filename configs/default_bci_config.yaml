@@ -3,7 +3,6 @@ stacking: 32
 projector_bias: False
 loss_reduction: "sum"
 
-neural_config: None
-
+neural_config: None         # imported from default_neural_config in bci.from_pretrained()
 
 

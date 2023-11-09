@@ -5,28 +5,13 @@ path_to_data: /n/home07/djimenezbeneto/lab/datasets/BCI/processed.data
 path_to_model: /n/home07/djimenezbeneto/lab/models/BCI
 checkpoint_dir: /n/home07/djimenezbeneto/lab/BCI/checkpoints
 ft_dir: /n/home07/djimenezbeneto/lab/BCI/ft_models
-log_dir: /n/home07/djimenezbeneto/lab/BCI/logs
 
-bci: None
-  neural_config: None
-    # e.g. context_forward: 
-  # e.g. stacking: 
+checkpoint_epoch: None
 
+eval_len: None
+eval_batch_size: 64
 
-trainer:
-  num_epochs: 25
-  save_epochs: [1,2,5,10,15,20]
-  train_len: None
-  test_len: None
-  test_batch_size: 64
-  train_batch_size: 256
+generation:
+  max_new_tokens: 16
+  do_sample: False
 
-optimizer:
-  lr: 3e-4
-  wd: 0.01
-  warmup_ratio: 0.05
-
-lora:
-  r: 8
-  alpha: 32
-  dropout: 0.1

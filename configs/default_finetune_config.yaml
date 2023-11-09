@@ -7,15 +7,13 @@ checkpoint_dir: /n/home07/djimenezbeneto/lab/BCI/checkpoints
 ft_dir: /n/home07/djimenezbeneto/lab/BCI/ft_models
 log_dir: /n/home07/djimenezbeneto/lab/BCI/logs
 
-bci: None
-  neural_config: None
-    # e.g. context_forward: 
-  # e.g. stacking: 
-
+# bci:
+  # neural_config:
 
 trainer:
   num_epochs: 25
   save_epochs: [1,2,5,10,15,20]
+  save_every: None
   train_len: None
   test_len: None
   test_batch_size: 64

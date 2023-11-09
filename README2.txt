@@ -1,7 +1,13 @@
-Launch finetuning script:
-    - accelerate launch --config_file deepspeed.yaml finetune.py --config_file kai_finetune.yaml
+Launch finetuning script (model is not saved correctly in distributed):
+    - accelerate launch --config_file deepspeed_bf16yaml finetune.py --config_file configs/finetune_kai.yaml 
+                        --kwargs k1=v1 k2=v2 
 
-Launch inference script:
+the config_file for finetuning updates the default_finetune_config.yaml, you can add only the 
+fields you need (including nested fields, with dot notation, e.g. bci.neural_config.context_forward=1)
+
+
+
+Launch inference script (still doesn't work dsitributed):
     - python inference.py 
 
 Loading:

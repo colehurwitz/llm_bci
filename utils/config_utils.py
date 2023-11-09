@@ -13,24 +13,33 @@ class DictConfig(dict):
 
 
 # Recursively update the entries of the config dict
-def update_config(new_config, config, cur, name):
+def update_config_rec(new_config, config, cur, name):
 
     if isinstance(config, DictConfig):
         for field in config:
-            assert field in new_config, f"{cur}{field} is not a field in {name}"
-            new_config[field] = update_config(new_config[field], config[field], f"{cur}{field}.", name)
+            if not field in new_config:
+                print(f"Added {cur}{field} to {name}")
+                new_config[field] = DictConfig({})
+            new_config[field] = update_config_rec(new_config[field], config[field], f"{cur}{field}.", name)
     else:
         new_config = config
 
     return new_config
 
-def create_and_update_config(default_config_file, config_file = None):
 
-    default_config = DictConfig(yaml.safe_load(open(default_config_file,"r")))
+# Update values in default_config from config, adding the missing keys if needed. 
+# If config is None, the default config is returned.
+# Configs can also be a path to the config file.
+def update_config(default_config, config = None, name="config"):
+
+    if isinstance(default_config, str):
+        default_config = DictConfig(yaml.safe_load(open(default_config_file,"r")))
+
     if config_file is None:
         return default_config
 
-    config = DictConfig(yaml.safe_load(open(config_file,"r")))
+    if isinstance(config, str):
+        config = DictConfig(yaml.safe_load(open(config_file,"r")))
 
-    return update_config(default_config, config, "", default_config_file)
+    return update_config_rec(default_config, config, "", name)
 

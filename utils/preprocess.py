@@ -47,15 +47,15 @@ def get_split_dict(split_dir, feature="tx1"):
 def load_dataset_dict(data_dir, feature="tx1", split="train"):
 
     print("Loading train data...")
-    train_dir = os.path.join(data_dir, "competitionData/train/")
+    train_dir = os.path.join(data_dir, "train")
     train_dict = get_split_dict(train_dir, feature)
 
     print("Loading test data...")
-    test_dir = os.path.join(data_dir, "competitionData/test/")
+    test_dir = os.path.join(data_dir, "test")
     test_dict = get_split_dict(test_dir, feature)
 
     print("Loading heldout data...")
-    heldout_dir = os.path.join(data_dir, "competitionData/competitionHoldOut/")
+    heldout_dir = os.path.join(data_dir, "competitionHoldOut")
     heldout_dict = get_split_dict(heldout_dir, feature)
 
 
@@ -83,17 +83,31 @@ def load_dataset_dict(data_dir, feature="tx1", split="train"):
         return {
                 "heldout": heldout_dict,
                 }
-
+    elif split == "all": 
+        return {
+                "train": train_dict,
+                "test":  test_dict,
+                "heldout": heldout_dict,
+                }
 
 
 """ Preprocess training data. Returns 
-        dict {
-            "input_ids": List[torch.LongTensor]      -  token ids for each sentence
-            "attention_mask": List[torch.LongTensor] -  0 for masked tokens, 1 for visible tokens
-            "labels": List[torch.LongTensor]         -  same as input_ids for the sentence, -100 for pad prompt
-            "features": List[torch.LongTensor]       -  neural signal features
-            "block_idx": List[torch.LongTensor]      -  index of block of trials
-            "date_idx": List[torch.LongTensor]       -  index of day of experiment
+        Dict { 
+            "model_inputs" {
+                "input_ids":        List[torch.LongTensor]  -   token ids for each sentence
+                "attention_mask":   List[torch.LongTensor]  -   0 for masked tokens, 1 for visible tokens
+                "labels":           List[torch.LongTensor]  -   same as input_ids for the sentence, mask (-100) for pad and prompt
+                "features":         List[torch.LongTensor]  -   neural signal features
+                "block_idx":        List[torch.LongTensor]  -   index of block of trials
+                "date_idx":         List[torch.LongTensor]  -   index of day of experiment
+            }
+            "eval" {
+                "sentences":        List[string]            -   target sentences
+                "prompt_inputs" {
+                    "input_ids":    torch.LongTensor        -   token ids for the prompt
+                    "attention_mask": torch.LongTensor      -   0 for masked tokens, 1 for visible tokens
+                }
+            }
         }
 """
 def preprocess_function(examples, tokenizer, prompt = ""):
@@ -136,7 +150,7 @@ def preprocess_function(examples, tokenizer, prompt = ""):
 
         # Keep to evaluate infenrence
         eval = {}
-        eval["sentences"] = sentences
+        eval["sentences"] = [s.translate(str.maketrans("","",punctuation)).lower().strip() for s in examples["sentences"] ]
         eval["prompt_inputs"] = prompt_inputs
 
         # print(model_inputs["features"][0])
@@ -158,16 +172,20 @@ def preprocess_function(examples, tokenizer, prompt = ""):
 from transformers import AutoTokenizer
 from functools import partial
 
-data_dir = "/n/home07/djimenezbeneto/lab/datasets/BCI"
-model_path = "/n/home07/djimenezbeneto/lab/models/BCI"
-proc_path = "/n/home07/djimenezbeneto/lab/datasets/BCI/processed.data"
+# data_dir = "/home/llm4bci/competitionData"
+# path_to_model = "/home/llm4bci/LLM"
+# path_to_data = "/home/llm4bci/competitionData/processed.data"
+
+data_dir = "/n/home07/djimenezbeneto/lab/datasets/BCI/competitionData"
+path_to_model = "/n/home07/djimenezbeneto/lab/models/BCI"
+path_to_data = "/n/home07/djimenezbeneto/lab/datasets/BCI/processed.data"
 
 
-tokenizer = AutoTokenizer.from_pretrained(model_path, add_bos_token=False, add_eos_token=False, padding_side="right")
+tokenizer = AutoTokenizer.from_pretrained(path_to_model, add_bos_token=False, add_eos_token=False, padding_side="right")
 
 prompt = ""
 feature="tx1"
-split="train"
+split="all"
 
 
 
@@ -176,4 +194,4 @@ proc_ds = {
         split: preprocess_function(ds[split], tokenizer, prompt=prompt) 
     for split in ds}
 
-torch.save(proc_ds, proc_path)
+torch.save(proc_ds, path_to_data)

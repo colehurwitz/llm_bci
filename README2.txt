@@ -1,5 +1,5 @@
 Launch finetuning script:
-    - accelerate launch --config_file deepspeed.yaml finetune.py
+    - accelerate launch --config_file deepspeed.yaml finetune.py --config_file kai_finetune.yaml
 
 Launch inference script:
     - python inference.py 
@@ -32,11 +32,14 @@ CHANGES
 TO DO
 -which part of the model is under LORA ?
 -Using higher lr for encoder and lower for decoder?
--pad_to_multiple_of ?
+-context span also for llama
 -data augmentation by choosing subset of channels?
 -penalization proportional to the frequency of the token
+-generation strategy
 
 OBS
+- WER in finetune.py is not very informative because the predictions are based in previous 
+subtokens. -> maybe we want to use a BERT-like model instead of Llama?
 -Max block and date index has to be specified in NeuralConfig, read from preprocess.py output
 -Right now I am using the same timestamps for all the examples, which means that effectively some of them are slightly
 compressed or expanded to match the "duration" of the latents. This is to ensure that all latents are carrying 

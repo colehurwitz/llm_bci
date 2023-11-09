@@ -15,7 +15,7 @@ class BCIDataset(Dataset):
         return len(self.data["model_inputs"]["input_ids"])
 
     def __getitem__(self, idx):
-        if self.split == "train":
+        if self.split == "train" or self.split == "test":
             return {
                 "input_ids": self.data["model_inputs"]["input_ids"][idx],
                 "labels": self.data["model_inputs"]["labels"][idx],
@@ -23,6 +23,7 @@ class BCIDataset(Dataset):
                 "features": self.data["model_inputs"]["features"][idx],
                 "block_idx": self.data["model_inputs"]["block_idx"][idx],
                 "date_idx": self.data["model_inputs"]["date_idx"][idx],
+                "sentence": self.data["eval"]["sentences"][idx],
             }
         elif self.split == "eval":
             return {
@@ -39,19 +40,19 @@ class BCIDataset(Dataset):
 
 
 """ Batch data. Returns
-        dict {
-            "input_ids": torch.LongTensor        -  token ids for each sentence
-            "attention_mask": torch.FloatTensor  -  0. for masked tokens, 1. for visible tokens
-            "labels": torch.LongTensor           -  same as input_ids for the sentence, -100 for pad and prompt
-            "features": torch.FloatTensor        -  neural signal features
-            "features_mask": torch.FloatTensor   -  0. for added time bins, 1. for real time bins
-            "features_timestamp": torch.LongTensor        -  position encoding for neural data
-            "block_idx":torch.LongTensor         -  index of block of trials
-            "date_idx": torch.LongTensor         -  index of day of experiment
-            "sentence": Optional[List[str]]      -  target sentence
+        Dict {
+            "input_ids":            torch.LongTensor    -   token ids for each sentence
+            "attention_mask":       torch.FloatTensor   -   0. for masked tokens, 1. for visible tokens
+            "labels":               torch.LongTensor    -   same as input_ids for the sentence, -100 for pad and prompt
+            "features":             torch.FloatTensor   -   neural signal features
+            "features_mask":        torch.FloatTensor   -   0. for added time bins, 1. for real time bins
+            "features_timestamp":   torch.LongTensor    -   position encoding for neural data
+            "block_idx":            torch.LongTensor    -   index of block of trials
+            "date_idx":             torch.LongTensor    -   index of day of experiment
         }
+        List                        str                 -   target sentences
 """
-def pad_collate_fn(pad_id, split, batch):
+def pad_collate_fn(pad_id, batch):
     padded_batch = {}
     padded_batch["input_ids"] = []
     padded_batch["labels"] = []
@@ -79,9 +80,9 @@ def pad_collate_fn(pad_id, split, batch):
         mask_fea = torch.ones(max_fea_len)
         mask_fea[:pad_fea_len] = 0
 
-        padded_batch["input_ids"].append(torch.cat((batch[i]["input_ids"], pad_seq),-1))
-        padded_batch["labels"].append(torch.cat((batch[i]["labels"], mask_lab),-1))
-        padded_batch["attention_mask"].append(torch.cat((batch[i]["attention_mask"], mask_seq),-1).float())
+        padded_batch["input_ids"].append(torch.cat((pad_seq, batch[i]["input_ids"]),-1))
+        padded_batch["labels"].append(torch.cat((mask_lab, batch[i]["labels"]),-1))
+        padded_batch["attention_mask"].append(torch.cat((mask_seq, batch[i]["attention_mask"]),-1).float())
         padded_batch["features"].append(torch.cat((pad_fea, batch[i]["features"]), -2))
         padded_batch["features_mask"].append(mask_fea.to(batch[i]["features"].dtype))
         padded_batch["features_timestamp"].append(
@@ -92,15 +93,8 @@ def pad_collate_fn(pad_id, split, batch):
     # for key in padded_batch:
     #     print(key, padded_batch[key].dtype)
 
-    if split == "train":
-        return padded_batch
-    elif split == "eval":
-        del padded_batch["labels"]
-        return padded_batch, [batch[i]["sentence"] for i in range(len(batch))]
-    else:
-        raise Exception(f"Split {split} is not known")
 
-    return padded_batch
+    return padded_batch, [batch[i]["sentence"] for i in range(len(batch))]
         
 
 

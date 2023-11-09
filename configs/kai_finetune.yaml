@@ -1,0 +1,20 @@
+savestring: "NDT2"
+
+path_to_data: /home/llm4bci/competitionData/processed.data
+path_to_model: /home/llm4bci/LLM
+checkpoint_dir: /home/llm4bci/checkpoints/
+ft_dir: /home/llm4bci/ft_models/
+log_dir: /home/llm4bci/logs/
+
+num_epochs: 2
+save_epochs: [1,2,5,10,15,25,35]
+
+seed: 1
+train_len: None
+test_len: None
+test_batch_size: 64
+train_batch_size: 256
+
+lr: 3e-4
+wd: 0.01
+warmup_ratio: 0.05

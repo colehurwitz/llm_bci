@@ -1,22 +1,20 @@
-import string
 from seq_alignment import global_similarity
 
-punctuation = string.punctuation.replace("'","")
 
-# Compute word edit distance bewtween two sentences afet normalising to the dataset 
+# Compute word edit distance bewtween two sentences after formatting to the dataset 
 # (lowercase and remove punctuation except apostrophes)
 def word_edit_distance(pred,target):
 
-    pred = pred.translate(str.maketrans("","",punctuation)).lower().strip().split(" ")
-    target = target.translate(str.maketrans("","",punctuation)).lower().strip().split(" ")
+    pred = pred.split(" ")
+    target = target.split(" ")
 
     sim_init = global_similarity(pred,target,False)
     sim_init.run()
     return sim_init.match_distance, len(target)
 
 
-# Compute word error rate over a list of predicitons and targets
-def word_error_rate(preds, targets):
+# Counts words and errors in a list of predicitons and targets
+def word_error_count(preds, targets):
 
     if not isinstance(preds, list):
         preds = [preds]

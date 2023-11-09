@@ -14,7 +14,7 @@ from models.peft_wrapper import PeftModelForBCI, PeftConfig
 from models.llama_decoder import LlamaDecoderWithLMHead
 from models.neural_encoder import NeuralEncoder
 
-from utils.config_utils import DictConfig, create_and_update_config
+from utils.config_utils import DictConfig, update_config
 
 DEFAULT_BCI_CONFIG_FILE = "configs/default_bci_config.yaml"
 DEFAULT_NEURAL_CONFIG_FILE = "configs/default_neural_config.yaml"
@@ -39,6 +39,7 @@ class BCI(LlamaPreTrainedModel):
         self.stacking = self.bci_config.stacking
         self.stack_projector = nn.Linear(self.neural_config.embed_mult*self.neural_config.n_channels*self.stacking, self.llama_config.hidden_size, bias=self.bci_config.projector_bias)
         self.decoder = LlamaDecoderWithLMHead(self.llama_config)
+        self.loss_fn = nn.CrossEntropyLoss(reduction=self.bci_config.loss_reduction)
 
         # init weights
         self.post_init() # from hf
@@ -103,12 +104,11 @@ class BCI(LlamaPreTrainedModel):
             shift_logits = logits[..., :-1, :].contiguous()
             shift_labels = labels[..., 1:].contiguous()
             # Flatten the tokens
-            loss_fct = nn.CrossEntropyLoss()
             shift_logits = shift_logits.view(-1, self.config.vocab_size)
             shift_labels = shift_labels.view(-1)
             # Enable model parallelism
             shift_labels = shift_labels.to(shift_logits.device)
-            loss = loss_fct(shift_logits, shift_labels)
+            loss = self.loss_fn(shift_logits, shift_labels)
 
         
         return CausalLMOutputWithPast(
@@ -124,13 +124,17 @@ class BCI(LlamaPreTrainedModel):
     # found, it is assumed that the state_dict doesn't contain the weights of an encoder and it is expected
     # to see a message from hf initializing the encoder weights.
     @classmethod
-    def from_pretrained(cls, path_to_model, bci_config_file=None, **kwargs):
+    def from_pretrained(cls, path_to_model, bci_config=None, **kwargs):
         
         print(f"Loading model from {path_to_model}")
 
-        pretrained_bci_config = os.path.join(path_to_model, "bci_config.yaml")
-        bci_config_file = pretrained_bci_config if os.path.isfile(pretrained_bci_config) else bci_config_file
-        bci_config = create_and_update_config(DEFAULT_BCI_CONFIG_FILE, bci_config_file)
+        bci_default_config = update_config(DEFAULT_BCI_CONFIG_FILE, None, "default_bci_config")
+        bci_default_config.neural_config = update_config(bci_default_config, DEFAULT_NEURAL_CONFIG_FILE, "default_bci_config")
+
+        bci_config_file = os.path.join(path_to_model, "bci_config.yaml")
+        bci_config_file = bci_config_file if os.path.isfile(bci_config_file) else None
+        bci_config = bci_config if bci_config_file is None else bci_config_file 
+        bci_config = update_config(bci_default_config, bci_config, "bci_config")
 
         model = super().from_pretrained(path_to_model, bci_config, **kwargs)
         model._is_peft = False
@@ -156,7 +160,7 @@ class BCI(LlamaPreTrainedModel):
     def load_encoder(self, path_to_encoder):
         print(f"Loading encoder from {path_to_encoder}")
         neural_config_file = os.path.join(path_to_encoder, "neural_config.yaml")
-        neural_config = create_and_update_config(DEFAULT_NEURAL_CONFIG_FILE, neural_config_file)
+        neural_config = update_config(DEFAULT_NEURAL_CONFIG_FILE, neural_config_file, "neural_config")
 
         self.encoder = NeuralEncoder(neural_config)
         self.encoder.load_state_dict(torch.load(os.path.join(path_to_encoder,"encoder.bin")))

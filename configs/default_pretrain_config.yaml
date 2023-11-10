@@ -1,0 +1,25 @@
+seed: 1
+savestring: "NDT2_pretrain"
+
+path_to_data: /n/home07/djimenezbeneto/lab/datasets/BCI/processed.data
+path_to_model: /n/home07/djimenezbeneto/lab/models/NDT
+checkpoint_dir: /n/home07/djimenezbeneto/lab/NDT/checkpoints
+ft_dir: /n/home07/djimenezbeneto/lab/NDT/ft_models
+log_dir: /n/home07/djimenezbeneto/lab/NDT/logs
+
+trainer:
+  num_epochs: 400
+  save_epochs: [1,50,100,200,300,390]
+  save_every: null
+  train_len: null     # null to use whole set
+  test_len: null      # null to use whole set
+  test_batch_size: 64
+  train_batch_size: 64
+
+optimizer:
+  lr: 1e-4
+  wd: 0.1
+  warmup_ratio: 0.1
+
+neural_config: include:configs/default_neural_config.yaml
+neural_pretrainer: include:configs/default_neural_pretrainer_config.yaml

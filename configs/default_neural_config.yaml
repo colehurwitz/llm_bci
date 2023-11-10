@@ -3,12 +3,12 @@ n_channels: 256
 n_blocks: 25
 n_dates: 24
 max_spikes: 60
-context_forward: -1
-context_backward: -1
+context_forward: 15
+context_backward: 30
 
 # Init
-spike_log_init: False
-fixup_init: False
+spike_log_init: true
+fixup_init: true
 
 # Neural Encoder Architecture
 embed_mult: 1
@@ -19,7 +19,7 @@ embed_act: "sigmoid"
 embed_context: False
 
 use_scalenorm: false
-n_layers: 5
+n_layers: 2
 n_heads: 2
 hidden_act: "silu"
 attention_bias: false

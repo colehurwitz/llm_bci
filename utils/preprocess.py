@@ -10,7 +10,9 @@ import numpy as np
 
 from datasets import Dataset, DatasetDict
 
-# Extract data from files into dict
+""" Extract neural data from files into dict. Returns the spikes data, the date and the
+    block of the experiment, and the target sentence.
+"""
 def get_split_dict(split_dir, feature="tx1"):
     
     # Load data
@@ -33,62 +35,41 @@ def get_split_dict(split_dir, feature="tx1"):
     y = np.concatenate(y)
     b = (np.concatenate(b).squeeze() - 1).tolist()    # translate to start at 0
 
-    
-
     return {
         "features":  x,   
         "sentences": y,
-        "block_idx": b,
-        "date_idx": d,
+        "blocks": b,
+        "dates": d,
     }
     
 
-# Load the dataset dict for training/evaluation
-def load_dataset_dict(data_dir, feature="tx1", split="train"):
+""" Load the dataset dict for training/evaluation
+"""
+def load_dataset_dict(data_dir, feature="tx1", splits=["train","test","competitionHoldOut"]):
 
-    print("Loading train data...")
-    train_dir = os.path.join(data_dir, "train")
-    train_dict = get_split_dict(train_dir, feature)
+    dataset_dict = {}
 
-    print("Loading test data...")
-    test_dir = os.path.join(data_dir, "test")
-    test_dict = get_split_dict(test_dir, feature)
-
-    print("Loading heldout data...")
-    heldout_dir = os.path.join(data_dir, "competitionHoldOut")
-    heldout_dict = get_split_dict(heldout_dir, feature)
+    # Get dict for each split
+    for split in splits:
+        print(f"Loading {split} data...")
+        dir = os.path.join(data_dir, split)
+        dict = get_split_dict(dir, feature)
+        dataset_dict[split] = dict
 
 
-    all_dates = set(train_dict["date_idx"]+ test_dict["date_idx"] + heldout_dict["date_idx"])
-    d_to_i = {d: i for i, d in enumerate(all_dates)}
-    for split_dict in [train_dict, test_dict, heldout_dict]:
-        split_dict["date_idx"] = [d_to_i[d] for d in split_dict["date_idx"]]
+    # Index the dates and the blocks
+    all_blocks = set([b  for split in splits for b in dict[split]["blocks"]])
+    all_dates = set([d  for split in splits for d in dataset_dict[split]["dates"]])
+    d_to_i = {d: i for i, d in enumerate(all_dates)} # date (tuple) to index (int)
+    for split in splits:
+        dataset_dict[split]["date_idx"] = [d_to_i[d] for d in dataset_dict[split]["dates"]]
+        dataset_dict[split]["block_idx"] = [b for b in dataset_dict[split]["blocks"]]
 
-    all_blocks = set(train_dict["block_idx"]+ test_dict["block_idx"] + heldout_dict["block_idx"])
-    print("Dates: ", len(d_to_i))
-    print("Blocks: ", all_blocks)
+    # Useful to set n_blocks and n_dates in the BCI model config
+    print("Dates: ", len(all_dates))
+    print("Blocks: ", len(all_blocks))
 
-    if split == "train":
-        return {
-                "train": train_dict,
-                "test":  test_dict,
-                }
-
-    elif split == "test": 
-        return {
-                "test": test_dict,
-                }
-
-    elif split == "heldout": 
-        return {
-                "heldout": heldout_dict,
-                }
-    elif split == "all": 
-        return {
-                "train": train_dict,
-                "test":  test_dict,
-                "heldout": heldout_dict,
-                }
+    return dataset_dict
 
 
 """ Preprocess training data. Returns 
@@ -98,13 +79,15 @@ def load_dataset_dict(data_dir, feature="tx1", split="train"):
                 "attention_mask":   List[torch.LongTensor]  -   0 for masked tokens, 1 for visible tokens
                 "labels":           List[torch.LongTensor]  -   same as input_ids for the sentence, mask (-100) for pad and prompt
                 "features":         List[torch.LongTensor]  -   neural signal features
-                "block_idx":        List[torch.LongTensor]  -   index of block of trials
+                "block_idx":        List[torch.LongTensor]  -   index of block of experiment
                 "date_idx":         List[torch.LongTensor]  -   index of day of experiment
             }
             "eval" {
                 "sentences":        List[string]            -   target sentences
+                "dates":            List[Tuple]             -   day of the experiment
+                "blocks":           List[int]               -   block of the experiment
                 "prompt_inputs" {
-                    "input_ids":    torch.LongTensor        -   token ids for the prompt
+                    "input_ids":      torch.LongTensor      -   token ids for the prompt
                     "attention_mask": torch.LongTensor      -   0 for masked tokens, 1 for visible tokens
                 }
             }
@@ -112,13 +95,14 @@ def load_dataset_dict(data_dir, feature="tx1", split="train"):
 """
 def preprocess_function(examples, tokenizer, prompt = ""):
 
+        # Tokenize prompt and bos token: to mask these tokens in input_ids and to use for evaluation
         prompt_inputs = tokenizer(
             prompt + tokenizer.bos_token, truncation=False, return_tensors="pt"
         )
         prompt_inputs = {key: prompt_inputs[key][0] for key in prompt_inputs}
-        prompt_ids_len = len(prompt_inputs["input_ids"]) - 1
+        prompt_ids_len = len(prompt_inputs["input_ids"]) - 1  # -1 to not count bos_token
 
-        # Remove all punctuation except apostrophes, set to lowercase, remove extra blank spaces and append prompt
+        # Remove all punctuation except apostrophes, set to lowercase, remove extra blank spaces, append prompt
         punctuation = string.punctuation.replace("'","")
         sentences = [
             prompt  + tokenizer.bos_token +
@@ -127,13 +111,13 @@ def preprocess_function(examples, tokenizer, prompt = ""):
             for s in examples['sentences']
         ]
 
-        # "input_ids" and "attention_mask" for prompt+sentence
+        # Tokenize prompt+sentence
         model_inputs = tokenizer(
             sentences, truncation=False
         )
         model_inputs = {key: [torch.tensor(row) for row in model_inputs[key]] for key in model_inputs}
 
-        # Text to decode, predict only the sentence
+        # Text to decode, mask prompt and predict only the sentence (with bos_token)
         labels = deepcopy(model_inputs["input_ids"])
         for row in labels:
             row[:prompt_ids_len] = -100 # default nn.CrossEntropyLoss ignore_index
@@ -148,11 +132,14 @@ def preprocess_function(examples, tokenizer, prompt = ""):
         # Date index
         model_inputs["date_idx"] = [torch.tensor(row,dtype=torch.int64) for  row in examples['date_idx'] ]
 
-        # Keep to evaluate infenrence
+        # Keep to evaluate word error rate
         eval = {}
         eval["sentences"] = [s.translate(str.maketrans("","",punctuation)).lower().strip() for s in examples["sentences"] ]
+        eval["dates"] = examples["dates"]
+        eval["blocks"] = examples["blocks"]
         eval["prompt_inputs"] = prompt_inputs
 
+        # To check that dtypes are adequate
         # print(model_inputs["features"][0])
         # print(model_inputs["input_ids"][0])
         # print(model_inputs["labels"][0])

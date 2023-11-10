@@ -1,5 +1,5 @@
 Launch finetuning script (model is not saved correctly in distributed):
-    - accelerate launch --config_file deepspeed_bf16yaml finetune.py --config_file configs/finetune_kai.yaml 
+    - accelerate launch --config_file deepspeed_bf16.yaml finetune.py --config_file configs/finetune_kai.yaml 
                         --kwargs k1=v1 k2=v2 
 
 the config_file for finetuning updates the default_finetune_config.yaml, you can add only the 

@@ -8,9 +8,7 @@ log_dir: /home/llm4bci/logs/
 
 
 bci: 
-  stacking: 16
-  neural_config: 
-    context_forward: 15
+  stacking: 32
     
 
 
@@ -18,8 +16,8 @@ trainer:
   num_epochs: 25
   save_epochs: [1,2,5,10,15,20]
   save_every: null
-  train_len: 12
-  test_len: 12
+  train_len: null
+  test_len: null
   test_batch_size: 3
   train_batch_size: 3
 

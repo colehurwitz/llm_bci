@@ -11,20 +11,20 @@ trainer:
   num_epochs: 25
   save_epochs: [1,2,5,10,15,20]
   save_every: null
-  train_len: null
-  test_len: null
+  train_len: null     # null to use whole set
+  test_len: null      # null to use whole set
   test_batch_size: 64
-  train_batch_size: 256
+  train_batch_size: 64
 
 optimizer:
-  lr: 3e-4
-  wd: 0.01
-  warmup_ratio: 0.05
+  lr: 1e-4
+  wd: 0.1
+  warmup_ratio: 0.1
 
 lora:
   r: 8
-  alpha: 32
-  dropout: 0.1
+  alpha: 0
+  dropout: 0.5
 
 
 bci: include:configs/default_bci_config.yaml  # this could be null as the bci model already loads this default config

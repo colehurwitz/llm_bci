@@ -1,5 +1,7 @@
 # My files
-sync_bci.sh
+*.sh
+
+
 
 # Byte-compiled / optimized / DLL files
 __pycache__/

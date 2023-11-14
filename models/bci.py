@@ -1,10 +1,11 @@
 import os
 import math
 import yaml
+from dataclasses import dataclass
 from typing import List, Optional, Tuple, Dict
 
 from transformers import LlamaPreTrainedModel, LlamaConfig
-from transformers.modeling_outputs import CausalLMOutputWithPast
+from transformers.utils import ModelOutput
 
 import torch
 import torch.nn as nn
@@ -18,6 +19,13 @@ from utils.config_utils import DictConfig, update_config
 
 DEFAULT_BCI_CONFIG_FILE = "configs/default_bci_config.yaml"
 DEFAULT_NEURAL_CONFIG_FILE = "configs/default_neural_config.yaml"
+
+@dataclass
+class BCIOutput(ModelOutput):
+    loss: Optional[torch.FloatTensor] = None
+    logits: torch.FloatTensor = None
+    n_examples: Optional[torch.LongTensor] = None
+
 
 # BCI class. Subclass  of LlamaPretrainedModel to acces all the hf code (from_pretained, etc)
 class BCI(LlamaPreTrainedModel):
@@ -57,7 +65,7 @@ class BCI(LlamaPreTrainedModel):
             labels:             Optional[torch.LongTensor] = None,  # (batch_size, seq_len)
             **kwargs, # added for compatibility with hf model.generate
 
-        ) -> CausalLMOutputWithPast:
+        ) -> BCIOutput:
 
         # Encode neural signal
         features_embeds = self.encoder(features, features_mask, features_timestamp, block_idx, date_idx) # (batch_size, fea_len, hidden_size)
@@ -93,6 +101,7 @@ class BCI(LlamaPreTrainedModel):
 
 
         loss = None
+        n_examples = None
         if labels is not None:
             # Add features mask to match sizes
             labels = torch.cat((
@@ -110,10 +119,12 @@ class BCI(LlamaPreTrainedModel):
             shift_labels = shift_labels.to(shift_logits.device)
             loss = self.loss_fn(shift_logits, shift_labels)
 
+            n_examples=(labels != -100).sum()
         
-        return CausalLMOutputWithPast(
+        return BCIOutput(
             loss=loss,
             logits=logits,
+            n_examples=n_examples,
         )
     
 

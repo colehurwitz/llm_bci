@@ -81,6 +81,7 @@ class ParseKwargs(argparse.Action):
 
 
 """ Parse flat kwargs dict with dot notation keys to nested dict
+    TO DO: parse lists
 """
 def config_from_kwargs(kwargs):
     
@@ -88,6 +89,16 @@ def config_from_kwargs(kwargs):
     
     if kwargs is not None:
         for key, value in kwargs.items():
+            # Convert string to int or float
+            if value.isdigit() or value.replace("-","").isdigit():
+                value = int(value)
+            else:
+                try:
+                    value = float(value)
+                except Exception:   
+                    pass
+                
+            
             # Go iteratively to the leaf
             cur = config
             for sub_key in key.split(".")[:-1]:

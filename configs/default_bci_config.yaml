@@ -5,4 +5,3 @@ loss_reduction: "sum"
 
 neural_config:  include:configs/default_neural_config.yaml
 
-

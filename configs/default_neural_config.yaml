@@ -16,7 +16,7 @@ embed_mode: "embed"
 embed_bias: false
 embed_gate: false
 embed_act: "sigmoid"
-embed_context: False
+embed_context: false
 
 use_scalenorm: false
 n_layers: 2
@@ -27,8 +27,8 @@ mlp_bias: false
 
 
 # Neural encoder regularization
-embed_dropout: 0.6
-layers_dropout: 0.6
+embed_dropout: 0.5
+layers_dropout: 0.5
 
 # Positional encoding
 use_rope: false

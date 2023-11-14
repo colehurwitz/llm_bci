@@ -37,9 +37,9 @@ def get_split_dict(split_dir, feature="tx1"):
 
     return {
         "features":  x,   
-        "sentences": y,
-        "blocks": b,
-        "dates": d,
+        "sentence": y,
+        "block": b,
+        "date": d,
     }
     
 
@@ -58,12 +58,13 @@ def load_dataset_dict(data_dir, feature="tx1", splits=["train","test","competiti
 
 
     # Index the dates and the blocks
-    all_blocks = set([b  for split in splits for b in dict[split]["blocks"]])
-    all_dates = set([d  for split in splits for d in dataset_dict[split]["dates"]])
+    all_blocks = set([b  for split in splits for b in dataset_dict[split]["block"]])
+    all_dates = set([d  for split in splits for d in dataset_dict[split]["date"]])
     d_to_i = {d: i for i, d in enumerate(all_dates)} # date (tuple) to index (int)
     for split in splits:
-        dataset_dict[split]["date_idx"] = [d_to_i[d] for d in dataset_dict[split]["dates"]]
-        dataset_dict[split]["block_idx"] = [b for b in dataset_dict[split]["blocks"]]
+        dataset_dict[split]["block_idx"] = [b for b in dataset_dict[split]["block"]]
+        dataset_dict[split]["date_idx"] = [d_to_i[d] for d in dataset_dict[split]["date"]]
+        
 
     # Useful to set n_blocks and n_dates in the BCI model config
     print("Dates: ", len(all_dates))
@@ -83,9 +84,9 @@ def load_dataset_dict(data_dir, feature="tx1", splits=["train","test","competiti
                 "date_idx":         List[torch.LongTensor]  -   index of day of experiment
             }
             "eval" {
-                "sentences":        List[string]            -   target sentences
-                "dates":            List[Tuple]             -   day of the experiment
-                "blocks":           List[int]               -   block of the experiment
+                "sentence":        List[string]             -   target sentences
+                "date":            List[Tuple]              -   day of the experiment
+                "block":           List[int]                -   block of the experiment
                 "prompt_inputs" {
                     "input_ids":      torch.LongTensor      -   token ids for the prompt
                     "attention_mask": torch.LongTensor      -   0 for masked tokens, 1 for visible tokens
@@ -108,7 +109,7 @@ def preprocess_function(examples, tokenizer, prompt = ""):
             prompt  + tokenizer.bos_token +
             s.translate(str.maketrans("","",punctuation)).lower().strip() + 
             tokenizer.eos_token 
-            for s in examples['sentences']
+            for s in examples['sentence']
         ]
 
         # Tokenize prompt+sentence
@@ -134,9 +135,9 @@ def preprocess_function(examples, tokenizer, prompt = ""):
 
         # Keep to evaluate word error rate
         eval = {}
-        eval["sentences"] = [s.translate(str.maketrans("","",punctuation)).lower().strip() for s in examples["sentences"] ]
-        eval["dates"] = examples["dates"]
-        eval["blocks"] = examples["blocks"]
+        eval["sentence"] = [s.translate(str.maketrans("","",punctuation)).lower().strip() for s in examples["sentence"] ]
+        eval["date"] = examples["date"]
+        eval["block"] = examples["block"]
         eval["prompt_inputs"] = prompt_inputs
 
         # To check that dtypes are adequate
@@ -172,13 +173,14 @@ tokenizer = AutoTokenizer.from_pretrained(path_to_model, add_bos_token=False, ad
 
 prompt = ""
 feature="tx1"
-split="all"
+splits=["train","test","competitionHoldOut"]
 
 
 
-ds = load_dataset_dict(data_dir, feature=feature, split=split)
+ds = load_dataset_dict(data_dir, feature=feature)
 proc_ds = {
         split: preprocess_function(ds[split], tokenizer, prompt=prompt) 
-    for split in ds}
+    for split in ds
+}
 
 torch.save(proc_ds, path_to_data)

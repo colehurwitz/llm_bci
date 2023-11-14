@@ -1,3 +1,4 @@
+import os
 import argparse
 from tqdm import tqdm
 from functools import partial
@@ -20,7 +21,7 @@ def reset_seeds(seed):
 
 def main(args):
 
-    config = update_config(DEFAULT_CONFIG_FILE, args.config_file)
+    config = update_config(DEFAULT_CONFIG_FILE, args.config_file if args.config_file != "none" else None)
     config = update_config(config, config_from_kwargs(args.kwargs))
 
     reset_seeds(config.seed)
@@ -33,7 +34,7 @@ def main(args):
         model = BCI.from_pretrained(ft_dir)
     else:
         # Load from checkpoint
-        checkpoint_dir = os.path.join(config.checkpoint_dir,config.savestring)
+        checkpoint_dir = os.path.join(config.checkpoint_dir,config.savestring,"EP"+str(config.checkpoint_epoch))
         model = BCI.from_pretrained(config.path_to_model, device_map="auto")
         model.load_adapter(checkpoint_dir)
         model.load_encoder(checkpoint_dir)
@@ -43,11 +44,11 @@ def main(args):
     print(model)
 
     # Load tokenizer
-    tokenizer = AutoTokenizer.from_pretrained(path_to_model, padding_side='right')
+    tokenizer = AutoTokenizer.from_pretrained(config.path_to_model, padding_side='right')
     pad_id = tokenizer.eos_token_id
 
     # Load data
-    data = torch.load(path_to_data)["test"]
+    data = torch.load(config.path_to_data)["test"]
     eval_dataset = BCIDataset(data, split="eval", len=config.eval_len)
     eval_dataloader = DataLoader(
         eval_dataset, collate_fn=partial(pad_collate_fn,pad_id), batch_size=config.eval_batch_size, pin_memory=True
@@ -56,12 +57,12 @@ def main(args):
     # Compute word error rate
     all_preds = []
     all_sentences = []
-    for step, batch in enumerate(tqdm(eval_dataloader)):
+    for step, (batch, sentences) in enumerate(tqdm(eval_dataloader)):
         with torch.no_grad():
-            model_inputs, sentences = batch
-            model_inputs = {key: model_inputs[key].to("cuda") for key in model_inputs}
+    
+            batch = {key: batch[key].to("cuda") for key in batch}
             preds = model.generate(
-                **model_inputs, 
+                **batch, 
                 max_new_tokens=config.generation.max_new_tokens,
                 do_sample=config.generation.do_sample,
                 pad_token_id=tokenizer.eos_token_id
@@ -71,9 +72,7 @@ def main(args):
             all_preds += preds
             all_sentences += sentences
     
-
-    torch.save({"preds": all_preds, "targets": all_sentences}, "preds.pt")
-    for p, t in zip(all_preds[:10], all_sentences[:10]):
+    for p, t in zip(all_preds, all_sentences):
         print("Prediction: {}\nTarget: {}".format(p, t))
 
     errors, words = word_error_count(all_preds,all_sentences)
@@ -83,7 +82,7 @@ def main(args):
 if __name__ == "__main__":
 
     parser = argparse.ArgumentParser()
-    parser.add_argument('-c', '--config_file', type = str, required=True, help="File (.yaml) with configuration for evaluation")
+    parser.add_argument('-c', '--config_file', type = str, help="File (.yaml) with configuration for evaluation", default="none")
     parser.add_argument('-k', '--kwargs', nargs='*', action=ParseKwargs)
     args = parser.parse_args()
 

@@ -1,5 +1,5 @@
 seed: 1
-savestring: "NDT2"
+savestring: "lora.dropout.0.6"
 
 path_to_data: /n/home07/djimenezbeneto/lab/datasets/BCI/processed.data
 path_to_model: /n/home07/djimenezbeneto/lab/models/BCI
@@ -8,9 +8,9 @@ ft_dir: /n/home07/djimenezbeneto/lab/BCI/ft_models
 log_dir: /n/home07/djimenezbeneto/lab/BCI/logs
 
 trainer:
-  num_epochs: 25
-  save_epochs: [1,2,5,10,15,20]
-  save_every: null
+  num_epochs: 5
+  save_epochs: []
+  save_every: 5
   train_len: null     # null to use whole set
   test_len: null      # null to use whole set
   test_batch_size: 64
@@ -18,14 +18,20 @@ trainer:
 
 optimizer:
   lr: 1e-4
-  wd: 0.1
+  wd: 0.01
   warmup_ratio: 0.1
 
 lora:
   r: 8
-  alpha: 0
-  dropout: 0.5
+  alpha: 32
+  dropout: 0.1
+  target_modules: ["q_proj","k_proj","v_proj","o_proj"]
 
 
-bci: include:configs/default_bci_config.yaml  # this could be null as the bci model already loads this default config
+bci: include:configs/default_bci_config.yaml  # this could be null as the bci model already loads this default config but it's good to have it available in the finetuning script
 # bci: null
+
+
+generation:
+  max_new_tokens: 16
+  do_sample: false

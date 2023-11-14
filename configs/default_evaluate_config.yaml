@@ -1,12 +1,12 @@
 seed: 1
-savestring: "NDT2"
+savestring: "lora.alpha.0"
 
 path_to_data: /n/home07/djimenezbeneto/lab/datasets/BCI/processed.data
 path_to_model: /n/home07/djimenezbeneto/lab/models/BCI
 checkpoint_dir: /n/home07/djimenezbeneto/lab/BCI/checkpoints
 ft_dir: /n/home07/djimenezbeneto/lab/BCI/ft_models
 
-checkpoint_epoch: null
+checkpoint_epoch: 25
 
 eval_len: null
 eval_batch_size: 64

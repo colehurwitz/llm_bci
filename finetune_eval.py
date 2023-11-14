@@ -69,7 +69,7 @@ def main(args):
     test_data = data["test"]
 
     train_dataset = BCIDataset(train_data, split="train", len=config.trainer.train_len)
-    test_dataset = BCIDataset(test_data, split="test", len=config.trainer.test_len)
+    test_dataset = BCIDataset(test_data, split="eval", len=config.trainer.test_len)
 
     train_dataloader = DataLoader(
         train_dataset, shuffle=True, collate_fn=partial(pad_collate_fn,pad_id), batch_size=config.trainer.train_batch_size, pin_memory=True
@@ -105,8 +105,6 @@ def main(args):
         # Train metrics
         train_loss = 0.
         train_examples = 0
-        train_errors = 0
-        train_words = 0
 
         for step, (batch, sentences) in enumerate(tqdm(train_dataloader)):
             
@@ -117,11 +115,6 @@ def main(args):
             # Gather train metrics
             train_loss += loss.detach().float()
             train_examples += outputs.n_examples.detach().float()
-            preds = torch.argmax(outputs.logits, -1)
-            preds = [tokenizer.decode(p.cpu().squeeze(), skip_special_tokens=True) for p in preds]
-            errors, words = word_error_count(preds, sentences)
-            train_errors += errors
-            train_words += words
 
             # Backward pass
             accelerator.backward(loss)
@@ -130,55 +123,46 @@ def main(args):
             optimizer.zero_grad()
 
             # Log to tensorboard
-            writer.add_scalar("Loss/train_iter",loss.detach().float()/outputs.n_examples.detach().float(), 1+step+(epoch-1)*len(train_dataloader))
-            writer.add_scalar("WER/train_iter",errors/words,1+step+(epoch-1)*len(train_dataloader))
+            writer.add_scalar("Loss/train_iter",loss.detach().float()/len(outputs.logits), 1+step+(epoch-1)*len(train_dataloader))
 
         # Log to tensorboard
         train_epoch_loss = train_loss / train_examples
         train_epoch_ppl = torch.exp(train_epoch_loss)
-        train_epoch_wer = train_errors / train_words
         writer.add_scalar("Perplexity/train",train_epoch_ppl,epoch)
         writer.add_scalar("Loss/train",train_epoch_loss,epoch)
-        writer.add_scalar("WER/train",train_epoch_wer,epoch)
 
 
         model.eval()
 
         # Test metrics
-        test_loss = 0.
-        test_examples = 0
-        test_errors = 0
-        test_words = 0
+        all_preds = []
+        all_sentences = []
 
         for step, (batch, sentences) in enumerate(tqdm(test_dataloader)):
 
             # Forward pass
             with torch.no_grad():
-                outputs = model(**batch)
-            
+                preds = model.generate(
+                    **batch, 
+                    max_new_tokens=config.generation.max_new_tokens,
+                    do_sample=config.generation.do_sample,
+                    pad_token_id=tokenizer.eos_token_id
+                )
+
             # Gather test metrics
-            loss = outputs.loss
-            test_loss += loss.detach().float()
-            test_examples += outputs.n_examples.detach().float()
-            preds = torch.argmax(outputs.logits, -1)
             preds = [tokenizer.decode(p.cpu().squeeze(), skip_special_tokens=True) for p in preds]
-            errors, words = word_error_count(preds, sentences)
-            test_errors += errors
-            test_words += words
+            all_preds += preds
+            all_sentences += sentences
+            errors, words = word_error_count(preds,sentences)
 
             # Log to tensorboard
-            writer.add_scalar("Loss/test_iter",loss.detach().float()/outputs.n_examples.detach().float(),1+step+(epoch-1)*len(test_dataloader))
             writer.add_scalar("WER/test_iter",errors/words,1+step+(epoch-1)*len(test_dataloader))
 
         # Log to tensorboard
-        test_epoch_loss = test_loss / test_examples
-        test_epoch_ppl = torch.exp(test_epoch_loss)
-        test_epoch_wer = test_errors / test_words
-        writer.add_scalar("Loss/test",test_epoch_loss,epoch)
-        writer.add_scalar("Perplexity/test",test_epoch_ppl,epoch)
-        writer.add_scalar("WER/test",test_epoch_wer,epoch)
+        errors, words = word_error_count(all_preds,all_sentences)
+        writer.add_scalar("WER/test",errors/words,epoch)
 
-        accelerator.print(f"{epoch=}: {train_epoch_ppl=} {train_epoch_loss=} {train_epoch_wer=} {test_epoch_ppl=} {test_epoch_loss=} {test_epoch_wer=}")
+        accelerator.print(f"{epoch=}: {train_epoch_ppl=} {train_epoch_loss=} {test_epoch_wer=}")
 
         # Save checkpoints (not merged because we don't want to delete the adapter yet)
         must_save = (config.trainer.save_every is not None and epoch%config.trainer.save_every == 0) or epoch in config.trainer.save_epochs

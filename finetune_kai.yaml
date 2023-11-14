@@ -1,4 +1,4 @@
-savestring: "NDT2"
+savestring: "NDT1"
 
 path_to_data: /home/llm4bci/competitionData/processed.data
 path_to_model: /home/llm4bci/LLM
@@ -30,3 +30,4 @@ lora:
   r: 8
   alpha: 32
   dropout: 0.1
+  target_modules: ["q_proj","k_proj","v_proj","o_proj"]

@@ -13,7 +13,7 @@ class BCIDataset(Dataset):
         
         if len is not None:
             self.data["model_inputs"] = {key: self.data["model_inputs"][key][:len] for key in self.data["model_inputs"]}
-            self.data["eval"]["sentences"] = self.data["eval"]["sentences"][:len]
+            self.data["eval"]["sentence"] = self.data["eval"]["sentence"][:len]
 
     def __len__(self):
         return len(self.data["model_inputs"]["input_ids"])
@@ -29,11 +29,11 @@ class BCIDataset(Dataset):
                 "features": self.data["model_inputs"]["features"][idx],
                 "block_idx": self.data["model_inputs"]["block_idx"][idx],
                 "date_idx": self.data["model_inputs"]["date_idx"][idx],
-                "sentence": self.data["eval"]["sentences"][idx],
+                "sentence": self.data["eval"]["sentence"][idx],
                 "block": self.data["eval"]["block"][idx], 
                 "date": self.data["eval"]["date"][idx],
             }
-        elif :
+        elif self.split == "eval":
             return {
                 "input_ids": self.data["eval"]["prompt_inputs"]["input_ids"],
                 "labels": self.data["eval"]["prompt_inputs"]["input_ids"],
@@ -41,7 +41,7 @@ class BCIDataset(Dataset):
                 "features": self.data["model_inputs"]["features"][idx],
                 "block_idx": self.data["model_inputs"]["block_idx"][idx],
                 "date_idx": self.data["model_inputs"]["date_idx"][idx],
-                "sentence": self.data["eval"]["sentences"][idx],
+                "sentence": self.data["eval"]["sentence"][idx],
                 "block": self.data["eval"]["block"][idx],
                 "date": self.data["eval"]["date"][idx],
             }
@@ -62,16 +62,15 @@ class BCIDataset(Dataset):
         }
         List[str]                                       -   target sentences
 
-        # Dict {
-        #     "sentences":            List[str]           -   target sentences
-        #     "block":                List[int]           -   block of experiment
-        #     "date":                 List[Tuple]         -   date of experiment
-        # }
-        
-
     The first Dict can be dierctly fed to BCI. It can also be fed to NeuralEncoder after removing input_ids,
     labels, and attention_mask. The List of sentences is used for evaluation
-"""
+"""  
+# Dict {
+#     "sentence":            List[str]            -   target sentences
+#     "block":                List[int]           -   block of experiment
+#     "date":                 List[Tuple]         -   date of experiment
+# }
+
 def pad_collate_fn(pad_id, batch):
     padded_batch = {}
     padded_batch["input_ids"] = []
@@ -118,7 +117,7 @@ def pad_collate_fn(pad_id, batch):
 
     # We can add this if we need it in the future
     # eval_dict = {
-    #     "sentences": [batch[i]["sentence"] for i in range(len(batch))],
+    #     "sentence": [batch[i]["sentence"] for i in range(len(batch))],
     #     "block": [batch[i]["block"] for i in range(len(batch))],
     #     "date": [batch[i]["date"] for i in range(len(batch))],
     # }

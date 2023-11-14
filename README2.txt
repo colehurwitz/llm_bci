@@ -1,3 +1,6 @@
+First preprocess data:
+    - python utils/preprocess.py
+
 Launch finetuning script (model is not saved correctly in distributed):
     - accelerate launch --config_file deepspeed_bf16.yaml finetune.py --config_file configs/finetune_kai.yaml 
                         --kwargs k1=v1 k2=v2 
@@ -36,6 +39,7 @@ CHANGES
 
 
 TO DO
+-visualize neural embeddings
 -which part of the model is under LORA ?
 -Using higher lr for encoder and lower for decoder?
 -context span also for llama

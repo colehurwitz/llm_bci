@@ -165,11 +165,12 @@ class NeuralEncoder(nn.Module):
     def __init__(self, config: DictConfig):
         super().__init__()
 
-        self.hidden_size = config.embed_mult * config.n_channels
+        self.n_channels = config.n_channels
+        self.hidden_size = config.embed_mult * self.n_channels
 
         # Embed neural data
         if config.embed_mode == "linear":
-            self.embed_spikes = nn.Linear(config.n_channels, self.hidden_size, bias=config.embed_bias)
+            self.embed_spikes = nn.Linear(self.n_channels, self.hidden_size, bias=config.embed_bias)
 
         elif config.embed_mode == "embed":
             self.embed_spikes = nn.Sequential(
@@ -188,7 +189,7 @@ class NeuralEncoder(nn.Module):
         self.embed_gate = config.embed_gate and config.linear_embed
         if self.embed_gate:
             self.gate_spikes = nn.Sequential(
-                nn.Linear(config.n_channels, self.hidden_size, bias=config.embed_bias),
+                nn.Linear(self.n_channels, self.hidden_size, bias=config.embed_bias),
                 ACT2FN[config.embed_act],
             )
 

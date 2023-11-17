@@ -5,7 +5,6 @@ from dataclasses import dataclass
 from typing import Optional, Union
 
 from transformers.utils import ModelOutput
-from transformers.activations import ACT2FN
 
 from models.neural_encoder import NeuralEncoder
 
@@ -21,7 +20,7 @@ class NeuralPretrainerOutput(ModelOutput):
 
 class NeuralPretrainer(nn.Module):
 
-    def __init__(self, encoder: NeuralEncoder, config: DictConfig, vocab_size=None, sil_id=None):
+    def __init__(self, encoder: NeuralEncoder, config: DictConfig, vocab_size=None, blank_id=None):
         super().__init__()
 
 
@@ -54,7 +53,7 @@ class NeuralPretrainer(nn.Module):
         if config.loss.type == "poisson":
             self.loss = nn.PoissonNLLLoss(reduction="none", log_input=config.use_lograte)
         elif config.loss.type == "ctc":
-            self.loss = nn.CTCLoss(reduction="none", blank=sil_id)
+            self.loss = nn.CTCLoss(reduction="none", blank=blank_id)
         
 
 

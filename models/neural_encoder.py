@@ -5,6 +5,7 @@ import torch
 import torch.nn as nn
 
 from transformers.activations import ACT2FN
+ACT2FN["softsign"] = nn.Softsign
 
 from utils.config_utils import DictConfig
 
@@ -44,19 +45,27 @@ class NeuralEmbeddingLayer(nn.Module):
     def __init__(self, hidden_size, config: DictConfig):
         super().__init__()
 
+        self.white_noise_sd = config.white_noise_sd
+        self.constant_offset_sd = config.constant_offset_sd
+        self.normalize = config.normalize
         self.adapt = config.adapt
         self.bias = config.bias
+        
         if self.adapt:
+            self.embed_spikes = nn.ModuleList([nn.Linear(config.n_channels, hidden_size, bias=config.bias) for i in range(config.n_dates)])
             # One embedding layer for each day
-            self.embed_spikes = nn.Parameter(torch.zeros(config.n_dates, hidden_size, config.n_channels))
-            sd = 1. / (config.n_channels ** 0.5)
-            self.embed_spikes.data.uniform_(-sd, sd) # default pytorch linear layer initialization
-            if self.bias:
-                self.embed_spikes_bias = nn.Parameter(torch.zeros(config.n_dates))
-                self.embed_spikes_bias.data.uniform_(-sd, sd)  # default pytorch linear layer initialization
+            # self.embed_spikes = nn.Parameter(torch.zeros(config.n_dates, hidden_size, config.n_channels))
+            # sd = 1. / (config.n_channels ** 0.5)
+            # self.embed_spikes.data.uniform_(-sd, sd) # default pytorch linear layer initialization
+            # if self.bias:
+            #     self.embed_spikes_bias = nn.Parameter(torch.zeros(config.n_dates))
+            #     self.embed_spikes_bias.data.uniform_(-sd, sd)  # default pytorch linear layer initialization
         else:
             # One common embedding layer
+            # self.norm = nn.LayerNorm(config.n_channels)
             self.embed_spikes = nn.Linear(config.n_channels, hidden_size, bias=config.bias)
+
+        self.act = ACT2FN[config.act]
 
         # Embedding scale
         self.scale = hidden_size ** 0.5
@@ -77,21 +86,41 @@ class NeuralEmbeddingLayer(nn.Module):
             date_idx:           Optional[torch.LongTensor] = None,   # (batch_size)
         ) -> torch.FloatTensor:                     # (batch_size, fea_len, hidden_size)
 
+        # Normalize across channels and add noise
+        features = self.norm_and_noise(features)
+
+        # Embed spikes
         if self.adapt:
-            weight = self.embed_spikes[date_idx]
-            x = (weight @ features.transpose(-1,-2)).transpose(-1,-2)
-            if self.bias:
-                x += self.embed_spikes_bias[date_idx].unsqueeze(-1).unsqueeze(-1)
+            x = torch.stack([self.embed_spikes[date_idx[i]](f) for i, f in enumerate(features)], 0)
+            # weight = self.embed_spikes[date_idx]
+            # x = (weight @ features_norm.transpose(-1,-2)).transpose(-1,-2)
+            # if self.bias:
+            #     x += self.embed_spikes_bias[date_idx].unsqueeze(-1).unsqueeze(-1)
         else:
             x = self.embed_spikes(features)
 
-        x = x * self.scale
+        x = self.act(x) * self.scale
 
          # Embed position
         if self.pos:
             x += self.embed_pos(features_timestamp)
 
         return self.dropout(x)
+
+    def norm_and_noise(self, features):
+        B, T, N = features.size()
+
+        if self.normalize:
+            features = (features - features.mean(-1).unsqueeze(-1)) / features.std(-1).unsqueeze(-1)
+
+        if self.white_noise_sd:
+            features += self.white_noise_sd*torch.randn(B,T,N, dtype=features.dtype, device=features.device)
+
+        if self.constant_offset_sd:
+            features += self.constant_offset_sd*torch.randn(B,1,N, dtype=features.dtype, device=features.device)
+
+        return features
+
 
 # MLP
 class NeuralMLP(nn.Module):
@@ -236,7 +265,7 @@ class NeuralFactorsProjection(nn.Module):
         super().__init__()
         
         self.out_size = config.size if config.project_to_factors else hidden_size
-        self.out_space = "factors" if config.project_to_factors else "hidden"
+        # self.out_space = "factors" if config.project_to_factors else "hidden"
         
         self.dropout = nn.Dropout(config.dropout)
 

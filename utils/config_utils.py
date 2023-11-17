@@ -19,22 +19,29 @@ class DictConfig(dict):
         return super()
 
 
-
-"""" Recursively update the entries of the config dict, unpacking the include files
+"""" Recursively unpacks the includes in a config
 """
-
-def update_config_rec(new_config, config):
+def unpack_config_rec(config):
     
     # Unpack includes
     if isinstance(config, str) and config.split(":")[0] == "include":
         config = yaml.safe_load(open(config.split(":")[1],"r"))
-    if isinstance(new_config, str) and new_config.split(":")[0] == "include":
-        new_config = yaml.safe_load(open(new_config.split(":")[1],"r"))
-
     
     if isinstance(config, dict):
-        # Deal with configs that should be a dict but are null
-        if new_config is None:
+        for field in config:
+            config[field] = unpack_config_rec(config[field])
+
+    return config
+
+
+
+"""" Recursively update the entries of the new_config dict wit the entries of the config dict
+"""
+def update_config_rec(new_config, config):
+    
+    if isinstance(config, dict):
+        # Force new fields in new_config to update with fields from config
+        if not isinstance(new_config,dict):
             new_config = {}
         for field in config:
             if not field in new_config:
@@ -63,7 +70,11 @@ def update_config(default_config, config = None):
     if isinstance(config, str):
         config = yaml.safe_load(open(config,"r"))
 
-    return DictConfig(update_config_rec(default_config, config))
+    # Go down the tree to unpack the includes
+    unpacked_default_config = unpack_config_rec(default_config)
+    unpacked_config = unpack_config_rec(config)
+
+    return DictConfig(update_config_rec(unpacked_default_config, unpacked_config))
 
 
 

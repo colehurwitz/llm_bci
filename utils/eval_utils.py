@@ -38,11 +38,11 @@ def word_error_count(preds, targets):
     
 """ Convert prediciton of Neural Encoder to phonograms
 """
-def format_ctc(pred, vocab):
+def format_ctc(pred, vocab, blank_id):
     phonogram = []
     last = -1
     for i in pred:
-        if i != last:
+        if i != last and i != blank_id:
             phonogram.append(vocab[i])
             last = deepcopy(i)
     return phonogram

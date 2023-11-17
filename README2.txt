@@ -39,6 +39,8 @@ CHANGES
 
 
 TO DO
+-kernel to extract features / some sort of stacking
+-higher lr
 -CHECK CTC LOSS CUDNN REQURIEMENTS
 -phoneme error rate in pretrain
 -subwords instead of phonemes

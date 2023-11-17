@@ -1,6 +1,13 @@
 # My files
+.gitignore
 *.sh
-
+sc_paths.yaml
+logs
+bash_logs
+checkpoints
+pt_models
+ft_models
+eval_pretrain.py
 
 
 # Byte-compiled / optimized / DLL files

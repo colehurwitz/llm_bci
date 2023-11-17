@@ -22,16 +22,15 @@ from utils.config_utils import update_config, config_from_kwargs, ParseKwargs
 DEFAULT_CONFIG_FILE = "configs/default_preprocess_config.yaml"
 
 PHONEMES_VOCAB = [
-    'SIL',
-    'AA0', 'AA1', 'AA2', 'AE0', 'AE1', 'AE2', 'AH0', 'AH1', 'AH2', 'AO0',
-    'AO1', 'AO2', 'AW0', 'AW1', 'AW2', 'AY0', 'AY1', 'AY2', 'B', 'CH', 'D', 'DH',
-    'EH0', 'EH1', 'EH2', 'ER0', 'ER1', 'ER2', 'EY0', 'EY1',
-    'EY2', 'F', 'G', 'HH',
-    'IH0', 'IH1', 'IH2', 'IY0', 'IY1', 'IY2', 'JH', 'K', 'L',
-    'M', 'N', 'NG', 'OW0', 'OW1',
-    'OW2', 'OY0', 'OY1', 'OY2', 'P', 'R', 'S', 'SH', 'T', 'TH',
-    'UH0', 'UH1', 'UH2', 'UW',
-    'UW0', 'UW1', 'UW2', 'V', 'W', 'Y', 'Z', 'ZH', 
+    'BLANK',
+    'AA', 'AE', 'AH', 'AO', 'AW', 
+    'AY', 'B', 'CH', 'D', 'DH',
+    'EH', 'ER', 'EY', 'F', 'G',
+    'HH', 'IH', 'IY', 'JH', 'K', 
+    'L', 'M', 'N', 'NG', 'OW',
+    'OY', 'P', 'R', 'S', 'SH', 
+    'T', 'TH', 'UH', 'UW', 'V', 
+    'W', 'Y', 'Z', 'ZH', 'SIL',
 ]
 
 
@@ -123,7 +122,7 @@ def load_dataset_dict(config):
 """
 def s_to_p(s, g2p):
     # keep only phonemes and add SIL at the end so that every word ends in SIL
-    return [pp if pp != " " else "SIL" for pp in g2p(s) if re.match(r'[A-Z]+', pp) or pp == " "] + ["SIL"] 
+    return [re.sub(r'[0-9]','',pp) if pp != " " else "SIL" for pp in g2p(s) if re.match(r'[A-Z]+', pp) or pp == " "] + ["SIL"] 
 
 def p_to_i(p):
     return [PHONEMES_VOCAB.index(pp) for pp in p]

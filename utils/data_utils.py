@@ -167,7 +167,7 @@ class NeuralPretrainerDataset(Dataset):
 
     The first Dict can be dierctly fed to NDT Pretrainer. The List of sentences is used for evaluation
 """  
-def pt_pad_collate_fn(sil_id, batch):
+def pt_pad_collate_fn(blank_id, batch):
     padded_batch = {}
     padded_batch["features"] = []
     padded_batch["features_mask"] = []
@@ -196,7 +196,7 @@ def pt_pad_collate_fn(sil_id, batch):
             pad_tar = torch.zeros(pad_tar_len, len(batch[i]["targets"][0]), dtype=torch.float)
             cat_idx = -2
         else:
-            pad_tar = torch.ones(pad_tar_len, dtype=torch.int64)*sil_id
+            pad_tar = torch.ones(pad_tar_len, dtype=torch.int64)*blank_id
             cat_idx = -1
 
         padded_batch["features"].append(torch.cat((batch[i]["features"], pad_fea), -2))

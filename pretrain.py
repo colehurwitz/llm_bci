@@ -53,7 +53,7 @@ def main(args):
 
     # Get vocabulary info
     vocab = data["train"]["eval"]["vocab"]
-    sil_id = vocab.index("SIL") if config.neural_pretrainer.loss.type == "ctc" else None
+    blank_id = vocab.index("BLANK") if config.neural_pretrainer.loss.type == "ctc" else None
     vocab_size = len(vocab)  if config.neural_pretrainer.loss.type == "ctc" else None
 
     # Created train and test dataloaders
@@ -64,16 +64,16 @@ def main(args):
     test_dataset = NeuralPretrainerDataset(test_data, loss_fn=config.neural_pretrainer.loss.type, len=config.trainer.test_len)
 
     train_dataloader = DataLoader(
-        train_dataset, shuffle=True, collate_fn=partial(pt_pad_collate_fn,sil_id), batch_size=config.trainer.train_batch_size, pin_memory=True
+        train_dataset, shuffle=True, collate_fn=partial(pt_pad_collate_fn,blank_id), batch_size=config.trainer.train_batch_size, pin_memory=True
     )
     test_dataloader = DataLoader(
-        test_dataset, collate_fn=partial(pt_pad_collate_fn,sil_id), batch_size=config.trainer.test_batch_size, pin_memory=True
+        test_dataset, collate_fn=partial(pt_pad_collate_fn,blank_id), batch_size=config.trainer.test_batch_size, pin_memory=True
     )   
 
 
     # Create encoder model for pretraining
     encoder = NeuralEncoder(config.neural_config)
-    model = NeuralPretrainer(encoder, config.neural_pretrainer, vocab_size, sil_id)
+    model = NeuralPretrainer(encoder, config.neural_pretrainer, vocab_size, blank_id)
     if config.model_dir is not None:  
         print(f"Loading model from {config.model_dir}")
         model.encoder.load_state_dict(torch.load(os.path.join(config.model_dir,"encoder.bin")))
@@ -110,8 +110,8 @@ def main(args):
         # Train metrics
         train_loss = 0.
         train_examples = 0
-        # train_errors = 0.
-        # train_phonemes = 0
+        train_errors = 0.
+        train_phonemes = 0
  
         for step, (batch, phonograms, sentences) in enumerate(tqdm(train_dataloader)):
     
@@ -130,25 +130,27 @@ def main(args):
 
             writer.add_scalar("Loss/train_iter",loss.detach().float()/outputs.n_examples, 1+step+(epoch-1)*len(train_dataloader))
 
-            # Get phoneme error rate
-            # if config.neural_pretrainer.loss.type == "ctc":
-            #     preds = torch.argmax(outputs.outputs, -1)
-            #     preds = [" ".join(format_ctc(pred, vocab)) for pred in preds]
-            #     phonograms = [" ".join(p) for p in phonograms]
-            #     errors, phonemes = word_error_count(preds, phonograms)
-            #     train_errors += errors
-            #     train_phonemes += phonemes
+            # Get phoneme error rate (every 15 steps to save time)
+            if config.neural_pretrainer.loss.type == "ctc" and step%15 == 0:
+                preds = torch.argmax(outputs.outputs, -1)
+                preds = [" ".join(format_ctc(pred, vocab, blank_id)) for pred in preds]
+                phonograms = [" ".join(p) for p in phonograms]
+                errors, phonemes = word_error_count(preds, phonograms)
+                train_errors += errors
+                train_phonemes += phonemes
                 
-            #     for p, s in zip(preds, sentences):
-            #         print(f"Sentence: {s} \nPrediction: {p} \n\n")
-            #     writer.add_scalar("PER/train_iter",errors/phonemes, 1+step+(epoch-1)*len(train_dataloader))
+                preds = [pred.replace(" ","").replace("SIL"," SIL ") for pred in preds]
+                phonograms = [p.replace(" ","").replace("SIL"," SIL ") for p in phonograms]
+                for pred, p, s in zip(preds, phonograms, sentences):
+                    print(f"Sentence: {s} \nPhonograms: {p} \nPrediction: {pred} \n")
+                writer.add_scalar("PER/train_iter",errors/phonemes, 1+step+(epoch-1)*len(train_dataloader))
 
 
         # Log to tensorboard
         train_epoch_loss = train_loss / train_examples
         writer.add_scalar("Loss/train",train_epoch_loss,epoch)
-        # train_epoch_PER = train_errors / train_phonemes
-        # writer.add_scalar("PER/train",train_PER,epoch)
+        train_epoch_PER = train_errors / train_phonemes
+        writer.add_scalar("PER/train",train_PER,epoch)
 
 
         print(f"Evaluation epoch {epoch}")
@@ -176,7 +178,7 @@ def main(args):
             # Get phoneme error rate
             if config.neural_pretrainer.loss.type == "ctc":
                 preds = torch.argmax(outputs.outputs,-1)
-                preds = [" ".join(format_ctc(pred, vocab)) for pred in preds]
+                preds = [" ".join(format_ctc(pred, vocab, blank_id)) for pred in preds]
                 phonograms = [" ".join(p) for p in phonograms]
                 errors, phonemes = word_error_count(preds, phonograms)
                 test_errors += errors
@@ -206,8 +208,8 @@ def main(args):
     writer.close()
 
     # Save pretrained model
-    torch.save(model.encoder.state_dict(), os.path.join(config.pt_dir,"encoder.bin"))
-    torch.save(model.decoder.state_dict(), os.path.join(config.pt_dir,"decoder.bin"))
+    torch.save(model.encoder.state_dict(), os.path.join(pt_dir,"encoder.bin"))
+    torch.save(model.decoder.state_dict(), os.path.join(pt_dir,"decoder.bin"))
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()

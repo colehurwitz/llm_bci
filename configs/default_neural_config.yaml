@@ -1,39 +1,50 @@
-# Data 
-n_channels: 256
-n_blocks: 25
-n_dates: 24
-max_spikes: 60
+# Context mask
 context_forward: 15
-context_backward: 30
-
-# Init
-spike_log_init: true
-fixup_init: true
-
-# Neural Encoder Architecture
-embed_mult: 1
-embed_mode: "embed"
-embed_bias: false
-embed_gate: false
-embed_act: "sigmoid"
-embed_context: false
-
-use_scalenorm: false
-n_layers: 2
-n_heads: 2
-hidden_act: "silu"
-attention_bias: false
-mlp_bias: false
+context_backward: 45
 
 
-# Neural encoder regularization
-embed_dropout: 0.5
-layers_dropout: 0.5
+# Embedding layer
+embedder:
+  n_channels: 256       # number of neurons recorded 
+  n_blocks: 24          # number of blocks of experiments
+  n_dates: 24           # number of days of experiments
+  max_F: 1024           # max feature len in timesteps
 
-# Positional encoding
-use_rope: false
-rope_theta: 10000.0
-max_T: 1024
+  mult: 1               # embedding multiplier. hiddden_sizd = n_channels * mult
+  bias: true            # use bias in the embedding layer
+  adapt: true           # adapt the embedding layer for each day
+  pos: true             # embed position 
+  dropout: 0.3          # dropout in embedding layer
+
+
+
+# Transformer
+transformer:
+  n_layers: 5           # number of transformer layers
+  n_heads: 2            # number of attentiomn heads
+  act: silu             # activiation function in mlp layers
+  attention_bias: false # use bias in the attention layers
+  mlp_bias: false       # use bias in the mlp layers
+  use_scalenorm: false  # use scalenorm  instead of layernorm
+  use_rope: false       # use rotary postional encoding
+  rope_theta: 10000.0   # rope angle of rotation
+  dropout: 0.3          # dropout in transformer layers
+
+
+# Projection to factor space
+factors:  
+  project_to_factors: true  # project from hidden_size to factors
+  size: 16              # factors size  
+  act: relu             # activation function after projecting to factors
+  bias: true            # use bias in projection to factors
+  dropout: 0.3          # dropout in projection to factors
+  re_init: false        # modify weight initialization
+  init_range: 0.1       # initialization range for factors projetion
+  
+
+
+
+
 
 
 

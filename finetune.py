@@ -16,7 +16,7 @@ from peft import LoraConfig
 
 from models.bci import BCI
 from utils.config_utils import update_config, config_from_kwargs, ParseKwargs
-from utils.data_utils import BCIDataset, pad_collate_fn
+from utils.data_utils import BCIDataset, bci_pad_collate_fn
 from utils.eval_utils import word_error_count
 
 DEFAULT_CONFIG_FILE = "configs/default_finetune_config.yaml"
@@ -40,6 +40,8 @@ def main(args):
     checkpoint_dir = os.path.join(config.checkpoint_dir,config.savestring)
     ft_dir = os.path.join(config.ft_dir,config.savestring)
     log_dir = os.path.join(config.log_dir,config.savestring)
+    if not os.path.exists(checkpoint_dir):
+        os.makedirs(checkpoint_dir)
 
     # Init tensorboard
     writer = SummaryWriter(log_dir=log_dir)
@@ -51,7 +53,7 @@ def main(args):
 
 
     # Load model with peft adapter for decoder
-    model = BCI.from_pretrained(config.path_to_model, config.bci)  
+    model = BCI.from_pretrained(config.model_dir, config.bci)  
     model.create_adapter(peft_config) 
 
     accelerator.print(model)
@@ -60,11 +62,11 @@ def main(args):
     model.decoder.print_trainable_parameters()
 
     # Load tokenizer 
-    tokenizer = AutoTokenizer.from_pretrained(config.path_to_model, padding_side='right')
+    tokenizer = AutoTokenizer.from_pretrained(config.model_dir, padding_side='right')
     pad_id = tokenizer.eos_token_id
 
     # Load preprocessed dataset
-    data = torch.load(config.path_to_data)
+    data = torch.load(os.path.join(config.data_dir, config.data_file))
     train_data = data["train"]
     test_data = data["test"]
 
@@ -72,10 +74,10 @@ def main(args):
     test_dataset = BCIDataset(test_data, split="test", len=config.trainer.test_len)
 
     train_dataloader = DataLoader(
-        train_dataset, shuffle=True, collate_fn=partial(pad_collate_fn,pad_id), batch_size=config.trainer.train_batch_size, pin_memory=True
+        train_dataset, shuffle=True, collate_fn=partial(bci_pad_collate_fn,pad_id), batch_size=config.trainer.train_batch_size, pin_memory=True
     )
     test_dataloader = DataLoader(
-        test_dataset, collate_fn=partial(pad_collate_fn,pad_id), batch_size=config.trainer.test_batch_size, pin_memory=True
+        test_dataset, collate_fn=partial(bci_pad_collate_fn,pad_id), batch_size=config.trainer.test_batch_size, pin_memory=True
     )
 
 
@@ -116,7 +118,7 @@ def main(args):
 
             # Gather train metrics
             train_loss += loss.detach().float()
-            train_examples += outputs.n_examples.detach().float()
+            train_examples += outputs.n_examples
             preds = torch.argmax(outputs.logits, -1)
             preds = [tokenizer.decode(p.cpu().squeeze(), skip_special_tokens=True) for p in preds]
             errors, words = word_error_count(preds, sentences)
@@ -130,7 +132,7 @@ def main(args):
             optimizer.zero_grad()
 
             # Log to tensorboard
-            writer.add_scalar("Loss/train_iter",loss.detach().float()/outputs.n_examples.detach().float(), 1+step+(epoch-1)*len(train_dataloader))
+            writer.add_scalar("Loss/train_iter",loss.detach().float()/outputs.n_examples, 1+step+(epoch-1)*len(train_dataloader))
             writer.add_scalar("WER/train_iter",errors/words,1+step+(epoch-1)*len(train_dataloader))
 
         # Log to tensorboard
@@ -159,7 +161,7 @@ def main(args):
             # Gather test metrics
             loss = outputs.loss
             test_loss += loss.detach().float()
-            test_examples += outputs.n_examples.detach().float()
+            test_examples += outputs.n_examples
             preds = torch.argmax(outputs.logits, -1)
             preds = [tokenizer.decode(p.cpu().squeeze(), skip_special_tokens=True) for p in preds]
             errors, words = word_error_count(preds, sentences)
@@ -167,7 +169,7 @@ def main(args):
             test_words += words
 
             # Log to tensorboard
-            writer.add_scalar("Loss/test_iter",loss.detach().float()/outputs.n_examples.detach().float(),1+step+(epoch-1)*len(test_dataloader))
+            writer.add_scalar("Loss/test_iter",loss.detach().float()/outputs.n_examples,1+step+(epoch-1)*len(test_dataloader))
             writer.add_scalar("WER/test_iter",errors/words,1+step+(epoch-1)*len(test_dataloader))
 
         # Log to tensorboard

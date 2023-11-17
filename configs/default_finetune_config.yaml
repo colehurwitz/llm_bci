@@ -1,8 +1,9 @@
 seed: 1
-savestring: "lora.dropout.0.6"
+savestring: lora.dropout.0.6
+data_file: processed.data
 
-path_to_data: /n/home07/djimenezbeneto/lab/datasets/BCI/processed.data
-path_to_model: /n/home07/djimenezbeneto/lab/models/BCI
+data_dir: /n/home07/djimenezbeneto/lab/datasets/BCI/competitionData
+model_dir: /n/home07/djimenezbeneto/lab/models/BCI
 checkpoint_dir: /n/home07/djimenezbeneto/lab/BCI/checkpoints
 ft_dir: /n/home07/djimenezbeneto/lab/BCI/ft_models
 log_dir: /n/home07/djimenezbeneto/lab/BCI/logs

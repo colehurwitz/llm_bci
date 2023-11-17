@@ -1,3 +1,5 @@
+from copy import deepcopy
+
 from seq_alignment import global_similarity
 
 
@@ -34,3 +36,13 @@ def word_error_count(preds, targets):
     return errors, words    
     
     
+""" Convert prediciton of Neural Encoder to phonograms
+"""
+def format_ctc(pred, vocab):
+    phonogram = []
+    last = -1
+    for i in pred:
+        if i != last:
+            phonogram.append(vocab[i])
+            last = deepcopy(i)
+    return phonogram

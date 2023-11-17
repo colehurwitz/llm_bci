@@ -1,11 +1,13 @@
 seed: 1
-savestring: "NDT2_pretrain"
+savestring: test
+data_file: processed-zscore-gauss.data
 
-path_to_data: /n/home07/djimenezbeneto/lab/datasets/BCI/processed.data
-path_to_model: /n/home07/djimenezbeneto/lab/models/NDT
-checkpoint_dir: /n/home07/djimenezbeneto/lab/NDT/checkpoints
-ft_dir: /n/home07/djimenezbeneto/lab/NDT/ft_models
-log_dir: /n/home07/djimenezbeneto/lab/NDT/logs
+model_dir: null  # pretrained model to load to continue pretraining, null to start from scratch
+data_dir: /n/home07/djimenezbeneto/lab/datasets/BCI/competitionData
+checkpoint_dir: /n/home07/djimenezbeneto/lab/BCI/checkpoints
+pt_dir: /n/home07/djimenezbeneto/lab/BCI/pt_models
+log_dir: /n/home07/djimenezbeneto/lab/BCI/logs
+
 
 trainer:
   num_epochs: 400
@@ -17,8 +19,8 @@ trainer:
   train_batch_size: 64
 
 optimizer:
-  lr: 1e-4
-  wd: 0.1
+  lr: 1.e-4
+  wd: 0.01
   warmup_ratio: 0.1
 
 neural_config: include:configs/default_neural_config.yaml

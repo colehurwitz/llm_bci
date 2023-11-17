@@ -10,7 +10,7 @@ from transformers import AutoTokenizer
 
 from models.bci import BCI
 from utils.config_utils import update_config, config_from_kwargs, ParseKwargs
-from utils.data_utils import BCIDataset, pad_collate_fn
+from utils.data_utils import BCIDataset, bci_pad_collate_fn
 from utils.eval_utils import word_error_count
 
 DEFAULT_CONFIG_FILE = "configs/default_evaluate_config.yaml"
@@ -35,7 +35,7 @@ def main(args):
     else:
         # Load from checkpoint
         checkpoint_dir = os.path.join(config.checkpoint_dir,config.savestring,"EP"+str(config.checkpoint_epoch))
-        model = BCI.from_pretrained(config.path_to_model, device_map="auto")
+        model = BCI.from_pretrained(config.model_dir, device_map="auto")
         model.load_adapter(checkpoint_dir)
         model.load_encoder(checkpoint_dir)
 
@@ -44,14 +44,14 @@ def main(args):
     print(model)
 
     # Load tokenizer
-    tokenizer = AutoTokenizer.from_pretrained(config.path_to_model, padding_side='right')
+    tokenizer = AutoTokenizer.from_pretrained(config.model_dir, padding_side='right')
     pad_id = tokenizer.eos_token_id
 
     # Load data
-    data = torch.load(config.path_to_data)["test"]
+    data = torch.load(os.path.join(config.data_dir, config.data_file))[config.split]
     eval_dataset = BCIDataset(data, split="eval", len=config.eval_len)
     eval_dataloader = DataLoader(
-        eval_dataset, collate_fn=partial(pad_collate_fn,pad_id), batch_size=config.eval_batch_size, pin_memory=True
+        eval_dataset, collate_fn=partial(bci_pad_collate_fn,pad_id), batch_size=config.eval_batch_size, pin_memory=True
     )
 
     # Compute word error rate

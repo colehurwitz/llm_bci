@@ -51,7 +51,7 @@ def main(args):
 
 
     # Load model with peft adapter for decoder
-    model = BCI.from_pretrained(config.path_to_model, config.bci)  
+    model = BCI.from_pretrained(config.model_dir, config.bci)  
     model.create_adapter(peft_config) 
 
     accelerator.print(model)
@@ -60,11 +60,11 @@ def main(args):
     model.decoder.print_trainable_parameters()
 
     # Load tokenizer 
-    tokenizer = AutoTokenizer.from_pretrained(config.path_to_model, padding_side='right')
+    tokenizer = AutoTokenizer.from_pretrained(config.model_dir, padding_side='right')
     pad_id = tokenizer.eos_token_id
 
     # Load preprocessed dataset
-    data = torch.load(config.path_to_data)
+    data = torch.load(os.path.join(config.data_dir, config.data_file))
     train_data = data["train"]
     test_data = data["test"]
 

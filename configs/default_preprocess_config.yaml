@@ -1,0 +1,13 @@
+data_file: processed2.data  # name of preprocessed data file
+
+tokenizer_dir: /n/home07/djimenezbeneto/lab/models/BCI                  # load tokenizer from here
+data_dir: /n/home07/djimenezbeneto/lab/datasets/BCI/competitionData     # load data from here
+
+splits: ["train","test","competitionHoldOut"]  # which data to load
+feature: "tx1"            # feature to extract
+prompt: ""                # add prompt before sentence 
+zscore: true              # normalize blocks
+gauss_smooth: true        # apply gaussian smoothing to neural features
+padding_mode: "constant"  # padding config for gaussian filter 
+sd:  2                    # standard deviation of gaussian kernel (it's 40ms * sd wide)
+

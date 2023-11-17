@@ -2,7 +2,7 @@ import os
 import math
 import yaml
 from dataclasses import dataclass
-from typing import List, Optional, Tuple, Dict
+from typing import Optional
 
 from transformers import LlamaPreTrainedModel, LlamaConfig
 from transformers.utils import ModelOutput
@@ -22,8 +22,8 @@ DEFAULT_NEURAL_CONFIG_FILE = "configs/default_neural_config.yaml"
 
 @dataclass
 class BCIOutput(ModelOutput):
+    logits: torch.FloatTensor
     loss: Optional[torch.FloatTensor] = None
-    logits: torch.FloatTensor = None
     n_examples: Optional[torch.LongTensor] = None
 
 
@@ -49,19 +49,16 @@ class BCI(LlamaPreTrainedModel):
         self.decoder = LlamaDecoderWithLMHead(self.llama_config)
         self.loss_fn = nn.CrossEntropyLoss(reduction=self.bci_config.loss_reduction)
 
-        # init weights
-        self.post_init() # from hf
-
 
     def forward(
             self,
             input_ids:          torch.LongTensor,                   # (batch_size, seq_len)
-            attention_mask:     torch.FloatTensor,                  # (batch_size, seq_len)
-            features:           torch.LongTensor,                   # (batch_size, fea_len, n_channels)
-            features_mask:      torch.LongTensor,                  # (batch_size, fea_len)
+            attention_mask:     torch.LongTensor,                   # (batch_size, seq_len)
+            features:           torch.FloatTensor,                   # (batch_size, fea_len, n_channels)
+            features_mask:      torch.LongTensor,                   # (batch_size, fea_len)
             features_timestamp: torch.LongTensor,                   # (batch_size, fea_len)
-            block_idx:          torch.LongTensor,                   # (batch_size, fea_len)
-            date_idx:           torch.LongTensor,                   # (batch_size, fea_len)
+            block_idx:          Optional[torch.LongTensor] = None,  # (batch_size)
+            date_idx:           Optional[torch.LongTensor] = None,  # (batch_size)
             labels:             Optional[torch.LongTensor] = None,  # (batch_size, seq_len)
             **kwargs, # added for compatibility with hf model.generate
 
@@ -69,19 +66,19 @@ class BCI(LlamaPreTrainedModel):
 
         # Encode neural signal
         features_embeds = self.encoder(features, features_mask, features_timestamp, block_idx, date_idx) # (batch_size, fea_len, hidden_size)
-        B, T, n = features_embeds.size()
+        B, F, n = features_embeds.size()
 
         # Pad to be evenly stacked
-        if T % self.stacking != 0:
-            new_fea_len = math.ceil(T / self.stacking) * self.stacking
-            features_embeds = torch.cat((torch.zeros(B, new_fea_len - T, n).to(features_embeds.device, features_embeds.dtype), features_embeds), 1)
-            features_mask = torch.cat((torch.zeros(B, new_fea_len - T).to(features_mask.device, features_mask.dtype), features_mask), 1).to(features_mask.dtype)
-            T = new_fea_len
+        if F % self.stacking != 0:
+            new_fea_len = math.ceil(F / self.stacking) * self.stacking
+            features_embeds = torch.cat((torch.zeros(B, new_fea_len - F, n).to(features_embeds.device, features_embeds.dtype), features_embeds), 1)
+            features_mask = torch.cat((torch.zeros(B, new_fea_len - F).to(features_mask.device, features_mask.dtype), features_mask), 1).to(features_mask.dtype)
+            F = new_fea_len
         
         # Stack and project
-        features_embeds = features_embeds.view(B,T//self.stacking,n*self.stacking)
+        features_embeds = features_embeds.view(B,F//self.stacking,n*self.stacking)
         features_embeds = self.stack_projector(features_embeds)
-        features_mask = features_mask.view(B, T//self.stacking, self.stacking)
+        features_mask = features_mask.view(B, F//self.stacking, self.stacking)
         features_mask = (features_mask.sum(-1) == self.stacking).to(attention_mask.dtype) # only keep new features that contain no padding
 
         # Embed tokens of sentence
@@ -119,11 +116,11 @@ class BCI(LlamaPreTrainedModel):
             shift_labels = shift_labels.to(shift_logits.device)
             loss = self.loss_fn(shift_logits, shift_labels)
 
-            n_examples=(labels != -100).sum()
+            n_examples=(labels != -100).sum().detach().cpu().item()
         
         return BCIOutput(
-            loss=loss,
             logits=logits,
+            loss=loss,
             n_examples=n_examples,
         )
     
@@ -135,69 +132,69 @@ class BCI(LlamaPreTrainedModel):
     # found, it is assumed that the state_dict doesn't contain the weights of an encoder and it is expected
     # to see a message from hf initializing the encoder weights.
     @classmethod
-    def from_pretrained(cls, path_to_model, bci_config=None, **kwargs):
+    def from_pretrained(cls, model_dir, bci_config=None, **kwargs):
         
-        print(f"Loading model from {path_to_model}")
+        print(f"Loading model from {model_dir}")
 
         # Prepare default config
         bci_default_config = update_config(DEFAULT_BCI_CONFIG_FILE, None)
 
 
         # Update default config with pretrained config or user config
-        bci_config_file = os.path.join(path_to_model, "bci_config.yaml")
+        bci_config_file = os.path.join(model_dir, "bci_config.yaml")
         bci_config = bci_config_file if os.path.isfile(bci_config_file) else bci_config
         bci_config = update_config(bci_default_config, bci_config)
         
         # Load with hf method
-        model = super().from_pretrained(path_to_model, bci_config, **kwargs)
+        model = super().from_pretrained(model_dir, bci_config, **kwargs)
         model._is_peft = False
 
         return model
 
 
-    def save_pretrained(self, path_to_model, **kwargs):
+    def save_pretrained(self, model_dir, **kwargs):
         if self._is_peft:
             raise Exception("Peft adapter is loaded, merge before saving")
-        print(f"Saving model to  {path_to_model}")
+        print(f"Saving model to  {model_dir}")
 
-        if not os.path.exists(path_to_model):
-            os.makedirs(path_to_model)
+        if not os.path.exists(model_dir):
+            os.makedirs(model_dir)
 
-        yaml.dump(dict(self.bci_config), open(os.path.join(path_to_model, "bci_config.yaml"), "w"), default_flow_style=False)
-        super().save_pretrained(path_to_model, **kwargs)
+        yaml.dump(dict(self.bci_config), open(os.path.join(model_dir, "bci_config.yaml"), "w"), default_flow_style=False)
+        super().save_pretrained(model_dir, **kwargs)
 
         
 
     # ENCODER METHODS
 
-    def load_encoder(self, path_to_encoder):
-        print(f"Loading encoder from {path_to_encoder}")
-        neural_config_file = os.path.join(path_to_encoder, "neural_config.yaml")
+    def load_encoder(self, encoder_dir):
+        print(f"Loading encoder from {encoder_dir}")
+        neural_config_file = os.path.join(encoder_dir, "neural_config.yaml")
         neural_config = update_config(DEFAULT_NEURAL_CONFIG_FILE, neural_config_file)
 
         self.encoder = NeuralEncoder(neural_config)
-        self.encoder.load_state_dict(torch.load(os.path.join(path_to_encoder,"encoder.bin")))
+        self.encoder.load_state_dict(torch.load(os.path.join(encoder_dir,"encoder.bin")))
 
 
-    def save_encoder(self, path_to_encoder):
-        print(f"Saving encoder to  {path_to_encoder}")
-        yaml.dump(dict(self.neural_config), open(os.path.join(path_to_encoder, "neural_config.yaml"),"w"), default_flow_style=False)
-        torch.save(self.encoder.state_dict(), os.path.join(path_to_encoder,"encoder.bin"))
+    def save_encoder(self, encoder_dir):
+        print(f"Saving encoder to  {encoder_dir}")
+        yaml.dump(dict(self.neural_config), open(os.path.join(encoder_dir, "neural_config.yaml"),"w"), default_flow_style=False)
+        torch.save(self.encoder.state_dict(), os.path.join(encoder_dir,"encoder.bin"))
         
 
     ## ADAPTER METHODS ##
 
-    def load_adapter(self, path_to_adapter, is_trainable=False, adapter_name="default", **kwargs):
+    def load_adapter(self, adapter_dir, is_trainable=False, adapter_name="default", **kwargs):
         
-        print(f"Loading adapter from {path_to_adapter}")
+        print(f"Loading adapter from {adapter_dir}")
 
         # Get peft config
-        peft_config = PeftConfig.from_pretrained(path_to_adapter)
+        peft_config = PeftConfig.from_pretrained(adapter_dir)
         peft_config.inference_mode = not is_trainable
 
         # Load trained adapter for decoder
         self.decoder = PeftModelForBCI(self.decoder, peft_config)
-        self.decoder.load_adapter(path_to_adapter, adapter_name, is_trainable=is_trainable)
+        self.decoder.load_adapter(adapter_dir, adapter_name, is_trainable=is_trainable)
         self._is_peft = True
 
 
@@ -210,16 +207,16 @@ class BCI(LlamaPreTrainedModel):
         self._is_peft = True
 
 
-    def save_adapter(self, path_to_adapter, **kwargs):
+    def save_adapter(self, adapter_dir, **kwargs):
         
         if not self._is_peft:
             raise Exception("No peft adapter loaded")
-        print(f"Saving adapter to  {path_to_adapter}")
+        print(f"Saving adapter to  {adapter_dir}")
 
-        if not os.path.exists(path_to_adapter):
-            os.makedirs(path_to_adapter)
+        if not os.path.exists(adapter_dir):
+            os.makedirs(adapter_dir)
 
-        self.decoder.save_pretrained(path_to_adapter, **kwargs)
+        self.decoder.save_pretrained(adapter_dir, **kwargs)
         
 
     def merge_adapter(self):
@@ -248,7 +245,7 @@ class BCI(LlamaPreTrainedModel):
     # Override default method for initialization. This is called on parameters that are not in the saved state_dict,
     # i.e., the encoder parameters and the new part of the lm (because of resizing)
     def _init_weights(self, module):
-
+        print("aaa")
         # All copied from Llama
         std = self.config.initializer_range
         if isinstance(module, nn.Linear):

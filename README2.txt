@@ -2,12 +2,12 @@ First preprocess data:
     - python utils/preprocess.py
 
 Launch finetuning script (model is not saved correctly in distributed):
-    - accelerate launch --config_file deepspeed_bf16.yaml finetune.py --config_file configs/finetune_kai.yaml 
+    - accelerate launch --config_file deepspeed.yaml finetune.py --config_file kai_dirs.yaml
                         --kwargs k1=v1 k2=v2 
 
 the config_file for finetuning updates the default_finetune_config.yaml, you can add only the 
 fields you need (including nested fields, with dot notation, e.g. bci.neural_config.context_forward=1)
-
+kai_dir.yaml contains the path to the relevant directories in kai's server
 
 
 Launch inference script (still doesn't work dsitributed):
@@ -39,6 +39,13 @@ CHANGES
 
 
 TO DO
+-CHECK CTC LOSS CUDNN REQURIEMENTS
+-phoneme error rate in pretrain
+-subwords instead of phonemes
+- padding mode for gaussian smoothing
+-disentangle relevant from irrelevant
+-check weight initialization
+- embedding gating and context
 -visualize neural embeddings
 -which part of the model is under LORA ?
 -Using higher lr for encoder and lower for decoder?
@@ -48,14 +55,11 @@ TO DO
 -generation strategy
 
 OBS
+-computing the phoneme error rate is 20 slower than the pretraining
+- bins are 20 ms long
 - WER in finetune.py is not very informative because the predictions are based in previous 
 subtokens. -> maybe we want to use a BERT-like model instead of Llama?
 -Max block and date index has to be specified in NeuralConfig, read from preprocess.py output
--Right now I am using the same timestamps for all the examples, which means that effectively some of them are slightly
-compressed or expanded to match the "duration" of the latents. This is to ensure that all latents are carrying 
-information. Another approach would be to use the actual duration of the inputs (scaled so that the maximum duration 
-is equal or less than the "duration" of the latents), but then the last (or the first) latents would be left out
-of the sequence (positionally). We could follow this approach and maybe mask the unused tokens
 - BLOCK 25 is only in test set. Train blocks:  {1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 23, 24}
 Test blocks: {8, 12, 13, 14, 15, 16, 17, 18, 19, 20, 25}. Heldout blocks: {1, 2, 3, 4, 6, 7}
 - We may need to add the Encoder or EncoderLayer to the no split module of llama if there are any kind of residual connections,

@@ -80,6 +80,31 @@ class ParseKwargs(argparse.Action):
             getattr(namespace, self.dest)[key] = value
 
 
+""" Convert string flags to adequate dtype
+"""
+def convert_to_dtype(value):
+
+    value = value.strip()
+
+    # Catch list
+    if value[0] == "[" and value[-1] == "]":
+        value = [convert_to_dtype(v) for v in value[1:-1].split(",")]
+    # Catch bool
+    elif value == "true" or value == "True":
+        value = True
+    elif value == "false" or value == "False":
+        value = False
+    # Catch int
+    elif value.isdigit() or value.replace("-","").isdigit():
+        value = int(value)
+    # Catch float
+    else:
+        try:
+            value = float(value)
+        except Exception:   
+            pass
+    return value
+            
 """ Parse flat kwargs dict with dot notation keys to nested dict
     TO DO: parse lists
 """
@@ -89,15 +114,9 @@ def config_from_kwargs(kwargs):
     
     if kwargs is not None:
         for key, value in kwargs.items():
-            # Convert string to int or float
-            if value.isdigit() or value.replace("-","").isdigit():
-                value = int(value)
-            else:
-                try:
-                    value = float(value)
-                except Exception:   
-                    pass
-                
+            
+            # Froms string to aproppriate dtype
+            value = convert_to_dtype(value)
             
             # Go iteratively to the leaf
             cur = config

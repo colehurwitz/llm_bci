@@ -1,7 +1,7 @@
 import torch
 from torch.utils.data import Dataset
 
-""" If len = None then all the data is used. In "train" and "test" splits, the input_ids, labels, and
+""" Dataset for finetuning the BCI. If len = None then all the data is used. In "train" and "test" splits, the input_ids, labels, and
     attention_mask are for the prompt+sentence. In "eval" split, these are for prompt only. 
 """
 class BCIDataset(Dataset):
@@ -14,6 +14,7 @@ class BCIDataset(Dataset):
         if len is not None:
             self.data["model_inputs"] = {key: self.data["model_inputs"][key][:len] for key in self.data["model_inputs"]}
             self.data["eval"]["sentence"] = self.data["eval"]["sentence"][:len]
+            self.data["eval"]["phonemes"] = self.data["eval"]["phonemes"][:len]
 
     def __len__(self):
         return len(self.data["model_inputs"]["input_ids"])
@@ -30,8 +31,6 @@ class BCIDataset(Dataset):
                 "block_idx": self.data["model_inputs"]["block_idx"][idx],
                 "date_idx": self.data["model_inputs"]["date_idx"][idx],
                 "sentence": self.data["eval"]["sentence"][idx],
-                "block": self.data["eval"]["block"][idx], 
-                "date": self.data["eval"]["date"][idx],
             }
         elif self.split == "eval":
             return {
@@ -42,20 +41,18 @@ class BCIDataset(Dataset):
                 "block_idx": self.data["model_inputs"]["block_idx"][idx],
                 "date_idx": self.data["model_inputs"]["date_idx"][idx],
                 "sentence": self.data["eval"]["sentence"][idx],
-                "block": self.data["eval"]["block"][idx],
-                "date": self.data["eval"]["date"][idx],
             }
         else:
-            raise Exception(f"Split {self.split} is not known")
+            raise Exception(f"Split {self.split} not implemented")
 
 
 """ Batch data. Returns
         Dict {
             "input_ids":            torch.LongTensor    -   token ids for each sentence
-            "attention_mask":       torch.FloatTensor   -   0. for masked tokens, 1. for visible tokens
+            "attention_mask":       torch.LongTensor   -   0. for masked tokens, 1. for visible tokens
             "labels":               torch.LongTensor    -   same as input_ids for the sentence, -100 for pad and prompt
             "features":             torch.FloatTensor   -   neural signal features
-            "features_mask":        torch.FloatTensor   -   0. for added time bins, 1. for real time bins
+            "features_mask":        torch.LongTensor   -   0. for added time bins, 1. for real time bins
             "features_timestamp":   torch.LongTensor    -   position encoding for neural data
             "block_idx":            torch.LongTensor    -   index of block of trials
             "date_idx":             torch.LongTensor    -   index of day of experiment
@@ -65,13 +62,7 @@ class BCIDataset(Dataset):
     The first Dict can be dierctly fed to BCI. It can also be fed to NeuralEncoder after removing input_ids,
     labels, and attention_mask. The List of sentences is used for evaluation
 """  
-# Dict {
-#     "sentence":            List[str]            -   target sentences
-#     "block":                List[int]           -   block of experiment
-#     "date":                 List[Tuple]         -   date of experiment
-# }
-
-def pad_collate_fn(pad_id, batch):
+def bci_pad_collate_fn(pad_id, batch):
     padded_batch = {}
     padded_batch["input_ids"] = []
     padded_batch["labels"] = []
@@ -90,23 +81,23 @@ def pad_collate_fn(pad_id, batch):
     for i in range(len(batch)):
         seq_len = len(batch[i]["input_ids"])
         pad_seq_len = max_seq_len - seq_len   
-        pad_seq = torch.ones(pad_seq_len, dtype=batch[i]["input_ids"].dtype)*pad_id
-        mask_seq = torch.zeros(pad_seq_len)
-        pad_lab = torch.ones(pad_seq_len, dtype=batch[i]["labels"].dtype) * (-100)
+        pad_seq = torch.ones(pad_seq_len, dtype=torch.int64)*pad_id
+        mask_seq = torch.zeros(pad_seq_len, dtype=torch.int64)
+        pad_lab = torch.ones(pad_seq_len, dtype=torch.int64) * (-100)
         fea_len = len(batch[i]["features"])
         pad_fea_len = max_fea_len - fea_len
-        pad_fea = torch.zeros(pad_fea_len, len(batch[i]["features"][0]), dtype=batch[i]["features"].dtype)
-        mask_fea = torch.ones(max_fea_len)
-        mask_fea[:pad_fea_len] = 0
+        pad_fea = torch.zeros(pad_fea_len, len(batch[i]["features"][0]), dtype=torch.float)
+        mask_fea = torch.ones(max_fea_len, dtype=torch.int64)
+        mask_fea[fea_len:] = 0
 
-        padded_batch["input_ids"].append(torch.cat((pad_seq, batch[i]["input_ids"]),-1))
-        padded_batch["labels"].append(torch.cat((pad_lab, batch[i]["labels"]),-1))
-        padded_batch["attention_mask"].append(torch.cat((mask_seq, batch[i]["attention_mask"]),-1).float())
-        padded_batch["features"].append(torch.cat((pad_fea, batch[i]["features"]), -2))
-        padded_batch["features_mask"].append(mask_fea.to(batch[i]["features"].dtype))
+        padded_batch["input_ids"].append(torch.cat((batch[i]["input_ids"], pad_seq),-1))
+        padded_batch["labels"].append(torch.cat((batch[i]["labels"], pad_lab),-1))
+        padded_batch["attention_mask"].append(torch.cat((batch[i]["attention_mask"], mask_seq),-1))
+        padded_batch["features"].append(torch.cat((batch[i]["features"], pad_fea), -2))
+        padded_batch["features_mask"].append(mask_fea)
         padded_batch["features_timestamp"].append(
-            torch.cat( (pad_fea[:,0], torch.arange(fea_len)) ).to(batch[i]["features"].dtype)
-        )    
+            torch.cat( (torch.arange(fea_len), pad_fea[:,0]) ).to(torch.int64)
+        )
 
     padded_batch = {key: torch.stack(padded_batch[key]) for key in padded_batch}
     
@@ -115,11 +106,119 @@ def pad_collate_fn(pad_id, batch):
     #     print(key, padded_batch[key].dtype)
 
 
-    # We can add this if we need it in the future
-    # eval_dict = {
-    #     "sentence": [batch[i]["sentence"] for i in range(len(batch))],
-    #     "block": [batch[i]["block"] for i in range(len(batch))],
-    #     "date": [batch[i]["date"] for i in range(len(batch))],
-    # }
     return padded_batch, [batch[i]["sentence"] for i in range(len(batch))]
+        
+
+
+""" Dataset for pretraining the Neural Encoder. If len = None then all the data is used. For "ctc" loss,
+targets are the phonemes/subwords to align. For "poisson" loss, targets are the spiking rates.
+"""
+class NeuralPretrainerDataset(Dataset):
+
+     
+    def __init__(self, data, loss_fn="ctc", len = None):
+        self.data = data
+        self.loss_fn = loss_fn
+        
+        if len is not None:
+            self.data["model_inputs"] = {key: self.data["model_inputs"][key][:len] for key in self.data["model_inputs"]}
+            self.data["eval"]["sentence"] = self.data["eval"]["sentence"][:len]
+            self.data["eval"]["phonogram"] = self.data["eval"]["phonogram"][:len]
+
+    def __len__(self):
+        return len(self.data["model_inputs"]["features"])
+
+    def __getitem__(self, idx):
+
+        if self.loss_fn == "ctc":
+            
+            return {
+                "sentence": self.data["eval"]["sentence"][idx],
+                "phonogram": self.data["eval"]["phonogram"][idx],
+                "features": self.data["model_inputs"]["features"][idx],
+                "targets": self.data["model_inputs"]["phonemes_idx"][idx],
+                "block_idx": self.data["model_inputs"]["block_idx"][idx],
+                "date_idx": self.data["model_inputs"]["date_idx"][idx],
+            }
+        elif self.loss_fn == "poisson":
+            return {
+                "sentence": self.data["eval"]["sentence"][idx],
+                "features": self.data["model_inputs"]["features"][idx],
+                "targets": self.data["model_inputs"]["features"][idx],
+                "block_idx": self.data["model_inputs"]["block_idx"][idx],
+                "date_idx": self.data["model_inputs"]["date_idx"][idx],
+            }
+        else:
+            raise Exception(f"Loss function {self.loss_fn} not implemented")
+
+
+""" Batch data. Returns
+        Dict {
+            "features":             torch.FloatTensor   -   neural signal features
+            "features_mask":        torch.LongTensor    -   0. for added time bins, 1. for real time bins
+            "features_timestamp":   torch.LongTensor    -   position encoding for neural data
+            "features_len":         torch.LongTensor    -   len of unpadded feature tensor
+            "targets":              torch.Long/FloatTensor    -   phoneme/subword index or spiking rates
+            "targets_len":          torch.LongTensor    -   len of unpadded target tensor
+            "block_idx":            torch.LongTensor    -   index of block of trials
+            "date_idx":             torch.LongTensor    -   index of day of experiment
+        }
+        List[str]                                       -   target sentences
+
+    The first Dict can be dierctly fed to NDT Pretrainer. The List of sentences is used for evaluation
+"""  
+def pt_pad_collate_fn(sil_id, batch):
+    padded_batch = {}
+    padded_batch["features"] = []
+    padded_batch["features_mask"] = []
+    padded_batch["features_timestamp"] = []
+    padded_batch["targets"] = []
+    padded_batch["features_len"] = []
+    padded_batch["targets_len"] = []
+    padded_batch["block_idx"] = [batch[i]["block_idx"] for i in range(len(batch))] # no need to pad
+    padded_batch["date_idx"]  = [batch[i]["date_idx"]  for i in range(len(batch))] # no need to pad
+
+    # Batch nodes and features
+    max_fea_len = max([len(batch[i]["features"]) for i in range(len(batch))])
+    max_tar_len = max([len(batch[i]["targets"]) for i in range(len(batch))])
+    
+
+    for i in range(len(batch)):
+
+        fea_len = len(batch[i]["features"])
+        pad_fea_len = max_fea_len - fea_len
+        pad_fea = torch.zeros(pad_fea_len, len(batch[i]["features"][0]), dtype=torch.float)
+        mask_fea = torch.ones(max_fea_len, dtype=torch.int64)
+        mask_fea[fea_len:] = 0
+        tar_len = len(batch[i]["targets"])
+        pad_tar_len = max_tar_len - tar_len
+        if batch[i]["targets"].dim() == 2:
+            pad_tar = torch.zeros(pad_tar_len, len(batch[i]["targets"][0]), dtype=torch.float)
+            cat_idx = -2
+        else:
+            pad_tar = torch.ones(pad_tar_len, dtype=torch.int64)*sil_id
+            cat_idx = -1
+
+        padded_batch["features"].append(torch.cat((batch[i]["features"], pad_fea), -2))
+        padded_batch["features_mask"].append(mask_fea)
+        padded_batch["features_timestamp"].append(
+            torch.cat( (torch.arange(fea_len), pad_fea[:,0]) ).to(torch.int64)
+        )    
+        padded_batch["features_len"].append(torch.tensor(fea_len, dtype=torch.int64))
+
+        padded_batch["targets"].append(torch.cat((batch[i]["targets"], pad_tar), cat_idx))
+        padded_batch["targets_len"].append(torch.tensor(tar_len,dtype=torch.int64))
+
+    padded_batch = {key: torch.stack(padded_batch[key]) for key in padded_batch}
+    
+    # print("features", padded_batch["features"][:4], padded_batch["features"].dtype)
+    # print("features_mask", padded_batch["features_mask"][:4], padded_batch["features_mask"].dtype)
+    # print("features_timestamp", padded_batch["features_timestamp"][:4], padded_batch["features_timestamp"].dtype)
+    # print("targets", padded_batch["targets"][:4], padded_batch["targets"].dtype)
+    # print("features_len", padded_batch["features_len"][:4], padded_batch["features_len"].dtype)
+    # print("targets_len", padded_batch["targets_len"][:4], padded_batch["targets_len"].dtype)
+    # print("block_idx", padded_batch["block_idx"][:4], padded_batch["block_idx"].dtype)
+    # print("date_idx", padded_batch["date_idx"][:4], padded_batch["date_idx"].dtype)
+
+    return padded_batch, [batch[i]["phonogram"] for i in range(len(batch))], [batch[i]["sentence"] for i in range(len(batch))]
         

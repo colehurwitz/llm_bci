@@ -1,14 +1,29 @@
+from copy import deepcopy
 from typing import List, Optional, Tuple, Dict
 from functools import partial
 
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 
 from transformers.activations import ACT2FN
 ACT2FN["softsign"] = nn.Softsign
 
 from utils.config_utils import DictConfig
 
+# Create buffer of biggest possible context mask 
+def create_context_mask(context_forward, context_backward, max_F) -> torch.LongTensor: # (max_fea_len, max_fea_len)
+
+        if context_forward == -1 and context_backward == -1:
+            return torch.ones(max_F, max_F)
+
+        context_forward = context_forward if context_forward >= 0 else max_F
+        mask = (torch.triu(torch.ones(max_F, max_F), diagonal=-context_forward).to(torch.int64)).transpose(0, 1)
+        if context_backward > 0:
+            back_mask = (torch.triu(torch.ones(max_F, max_F), diagonal=-context_backward).to(torch.int64))
+            mask = mask & back_mask
+
+        return mask
 
 # Copied from hf Llama
 # Precompute cos and sin for RoPE
@@ -39,33 +54,150 @@ def apply_rotary_pos_emb(q, k, pos_ids, cos, sin, unsqueeze_dim=1):
     
     return q_embed, k_embed
 
+
+
+# Mask features
+class Masker(nn.Module):
+
+    def __init__(self, config: DictConfig):
+        super().__init__()
+
+        self.mode = config.mode
+        self.ratio = config.ratio
+        self.zero_ratio = config.zero_ratio
+        self.random_ratio = config.random_ratio
+        self.expand_prob = config.expand_prob
+        self.max_timespan = config.max_timespan
+
+    def forward(
+        self, 
+        features: torch.FloatTensor,                    # (batch_size, fea_len, n_channels)
+    ) -> Tuple[torch.FloatTensor,torch.LongTensor]:     # (batch_size, fea_len, n_channels), (batch_size, fea_len, n_channels)
+
+        mask_ratio = deepcopy(self.ratio)
+
+        # Expand mask
+        if self.mode == "timestep" and torch.bernoulli(torch.tensor(self.expand_prob).float())
+            timespan = torch.randint(1, self.max_timespan+1, (1, )).item() 
+            mask_ratio = mask_ratio/timespan
+
+        # Get masking probabilities
+        if self.mode == "full":
+            mask_probs = torch.full(features.shape, mask_ratio)     # (batch_size, fea_len, n_channels)
+        elif self.mode == "timestep":
+            mask_probs = torch.full(features[:, :, 0].shape, mask_ratio) # (batch_size, fea_len)
+        elif self.mode == "neuron":
+            mask_probs = torch.full(features[:, 0].shape, mask_ratio)    # (batch_size, n_channels)
+        else:
+            raise Exception(f"Masking mode {self.mode} not implemented")
+        
+        # Create mask
+        mask = torch.bernoulli(mask_probs).to(features.device)
+
+        # Expand mask
+        if self.mode == "timestep":
+            mask = self.expand_timesteps(mask, timespan)
+            mask = mask.unsqueeze(2).expand_as(features).bool()    # (batch_size, fea_len, n_channels)
+        elif self.mode == "neuron":
+            mask = mask.unsqueeze(1).expand_as(features).bool()    # (batch_size, fea_len, n_channels)
+        
+        # Mask data
+        zero_idx = torch.bernoulli(torch.full(features.shape, self.zero_ratio)).to(features.device).bool() & mask
+        features[zero_idx] = 0
+        random_idx = torch.bernoulli(torch.full(features.shape, self.random_ratio)).to(features.device).bool() & mask & ~zero_idx
+        random_spikes = (features.max() * torch.rand(features.shape, device=features.device) ).to(features.dtype)
+        features[random_idx] = random_spikes[random_idx]
+        
+        return features, mask.to(torch.int64)
+
+    @staticmethod
+    def expand_timesteps(mask, width=1):
+        kernel = torch.ones(width, device=mask.device).view(1, 1, -1)
+        expanded_mask = F.conv1d(mask.unsqueeze(1), kernel, padding="same")
+        return (expanded_mask.squeeze(1) >= 1)
+        
+
+# Normalize and add noise
+class NormAndNoise(nn.Module):
+
+    def __init__(self, input_size, config):
+        super().__init__()
+        self.normalize = config.normalize
+        if self.normalize:
+            if config.norm == "layernorm":
+                self.norm = nn.LayerNorm(input_size)
+            elif config.norm == "scalenorm":
+                self.norm = ScaleNorm(input_size ** 0.5)
+            elif config.norm == "zscore":
+                self.norm = None
+            else:
+                raise Exception(f"Norm layer {config.norm} not implemented")
+        self.eps = config.eps
+        self.white_noise_sd = config.white_noise_sd
+        self.constant_offset_sd = config.constant_offset_sd
+
+    def forward(self, features):
+        B, T, N = features.size()
+
+        if self.normalize:  
+            if self.norm is None:
+                features = (features - features.mean(-1).unsqueeze(-1)) / (features.std(-1).unsqueeze(-1) + self.eps)
+            else:
+                features = self.norm(features)
+
+        if self.white_noise_sd is not None:
+            features += self.white_noise_sd*torch.randn(B,T,N, dtype=features.dtype, device=features.device)
+
+        if self.constant_offset_sd is not None:
+            features += self.constant_offset_sd*torch.randn(B,1,N, dtype=features.dtype, device=features.device)
+
+        return features
+
+
 # Embed
 class NeuralEmbeddingLayer(nn.Module):
 
     def __init__(self, hidden_size, config: DictConfig):
         super().__init__()
 
-        self.white_noise_sd = config.white_noise_sd
-        self.constant_offset_sd = config.constant_offset_sd
-        self.normalize = config.normalize
         self.adapt = config.adapt
         self.bias = config.bias
         
         if self.adapt:
-            self.embed_spikes = nn.ModuleList([nn.Linear(config.n_channels, hidden_size, bias=config.bias) for i in range(config.n_dates)])
-            # One embedding layer for each day
-            # self.embed_spikes = nn.Parameter(torch.zeros(config.n_dates, hidden_size, config.n_channels))
-            # sd = 1. / (config.n_channels ** 0.5)
-            # self.embed_spikes.data.uniform_(-sd, sd) # default pytorch linear layer initialization
-            # if self.bias:
-            #     self.embed_spikes_bias = nn.Parameter(torch.zeros(config.n_dates))
-            #     self.embed_spikes_bias.data.uniform_(-sd, sd)  # default pytorch linear layer initialization
+             # One embedding layer for each day
+            if config.mode == "linear":
+                self.embed_spikes = nn.ModuleList([
+                    nn.Linear(config.n_channels, hidden_size, bias=config.bias) 
+                for i in range(config.n_dates)])
+
+            elif config.mode == "embed":
+                self.embed_spikes = nn.ModuleList([
+                    nn.Sequential(
+                        nn.Embedding(config.max_spikes, config.mult),
+                        nn.Flatten(start_dim=-2)
+                    )
+                for i in range(config.n_dates)])
+            else:
+                raise Exception("Embedding mode {config.mode} cannot be adaptative")
         else:
             # One common embedding layer
-            # self.norm = nn.LayerNorm(config.n_channels)
-            self.embed_spikes = nn.Linear(config.n_channels, hidden_size, bias=config.bias)
+            if config.mode == "linear":
+                self.embed_spikes = nn.Linear(config.n_channels, hidden_size, bias=config.bias)
+            elif config.mode == "embed":
+                self.embed_spikes = nn.Sequential(
+                    nn.Embedding(config.max_spikes, config.mult),
+                    nn.Flatten(start_dim=-2)
+                )
+            elif config.mode == "identity":
+                self.embed_spikes = nn.Identity()
+            else:
+                raise Exception(f"Invalid embed mode {config.mode}.")
 
-        self.act = ACT2FN[config.act]
+        if config.mode == "embed" and config.fixup_init:
+            self.fixup_initialization(config.init_range, config.spike_log_init, config.max_spikes, adapt=self.adapt)
+
+        # Activation after embedding
+        self.act = ACT2FN[config.act] if config.act != "identity" else nn.Identity()
 
         # Embedding scale
         self.scale = hidden_size ** 0.5
@@ -86,19 +218,13 @@ class NeuralEmbeddingLayer(nn.Module):
             date_idx:           Optional[torch.LongTensor] = None,   # (batch_size)
         ) -> torch.FloatTensor:                     # (batch_size, fea_len, hidden_size)
 
-        # Normalize across channels and add noise
-        features = self.norm_and_noise(features)
-
         # Embed spikes
         if self.adapt:
             x = torch.stack([self.embed_spikes[date_idx[i]](f) for i, f in enumerate(features)], 0)
-            # weight = self.embed_spikes[date_idx]
-            # x = (weight @ features_norm.transpose(-1,-2)).transpose(-1,-2)
-            # if self.bias:
-            #     x += self.embed_spikes_bias[date_idx].unsqueeze(-1).unsqueeze(-1)
         else:
             x = self.embed_spikes(features)
 
+        # Rescaling
         x = self.act(x) * self.scale
 
          # Embed position
@@ -107,19 +233,32 @@ class NeuralEmbeddingLayer(nn.Module):
 
         return self.dropout(x)
 
-    def norm_and_noise(self, features):
-        B, T, N = features.size()
 
-        if self.normalize:
-            features = (features - features.mean(-1).unsqueeze(-1)) / features.std(-1).unsqueeze(-1)
-
-        if self.white_noise_sd:
-            features += self.white_noise_sd*torch.randn(B,T,N, dtype=features.dtype, device=features.device)
-
-        if self.constant_offset_sd:
-            features += self.constant_offset_sd*torch.randn(B,1,N, dtype=features.dtype, device=features.device)
-
-        return features
+    # Initialization methods copied from NDT
+    def fixup_initialization(self, init_range, spike_log_init, max_spikes, adapt):
+        if adapt:
+            for i in range(len(self.embed_spikes)):
+                if spike_log_init:
+                    # Use a log scale, since we expect spike semantics to follow compressive distribution
+                    log_scale = torch.arange(1, max_spikes+1).float().log() # 1 to lg
+                    log_scale = (log_scale - log_scale.mean()) / (log_scale[-1] - log_scale[0])
+                    log_scale = log_scale * init_range
+                    # Add some noise
+                    self.embed_spikes[i][0].weight.data.uniform_(-init_range / 10, init_range / 10)
+                    self.embed_spikes[i][0].weight.data += log_scale.unsqueeze(1).expand_as(self.embed_spikes[i][0].weight.data)
+                else:
+                    self.embed_spikes[i][0].weight.data.uniform_(-init_range, init_range)
+        else:
+            if spike_log_init:
+                # Use a log scale, since we expect spike semantics to follow compressive distribution
+                log_scale = torch.arange(1, max_spikes+1).float().log() # 1 to lg
+                log_scale = (log_scale - log_scale.mean()) / (log_scale[-1] - log_scale[0])
+                log_scale = log_scale * init_range
+                # Add some noise
+                self.embed_spikes[0].weight.data.uniform_(-init_range / 10, init_range / 10)
+                self.embed_spikes[0].weight.data += log_scale.unsqueeze(1).expand_as(self.embed_spikes[0].weight.data)
+            else:
+                self.embed_spikes[0].weight.data.uniform_(-init_range, init_range)
 
 
 # MLP
@@ -178,14 +317,14 @@ class NeuralAttention(nn.Module):
     def forward(
         self,       
         x:          torch.FloatTensor,                      # (batch_size, fea_len, hidden_size)
-        mask:       torch.LongTensor,                       # (batch_size, fea_len, fea_len)
+        attn_mask:  torch.LongTensor,                       # (batch_size, fea_len, fea_len)
         timestamp:  Optional[torch.LongTensor] = None,      # (batch_size, fea_len)
     ) -> torch.FloatTensor:                                 # (batch_size, fea_len, hidden_size)
 
         B, F, _  = x.size()     # batch size and fea len
 
         # Create batched bool attention mask 
-        attn_mask = mask.unsqueeze(1).expand(B,self.n_heads,F,F).bool()            # (B,n_heads,F,F)
+        attn_mask = attn_mask.unsqueeze(1).expand(B,self.n_heads,F,F).bool()            # (B,n_heads,F,F)
 
         # Compute query, key, value for attention
         q = self.query(x).view(B, F, self.n_heads, self.head_size).transpose(1, 2)      #(B,n_heads,F,head_size)
@@ -228,12 +367,12 @@ class NeuralEncoderLayer(nn.Module):
     def forward(
         self, 
         x:          torch.FloatTensor,                  # (batch_size, fea_len, hidden_size)
-        mask:       torch.LongTensor,                   # (batch_size, fea_len, fea_len)
+        attn_mask:  torch.LongTensor,                   # (batch_size, fea_len, fea_len)
         timestamp:  Optional[torch.LongTensor] = None,  # (batch_size, fea_len)          
     ) -> torch.FloatTensor :                            # (batch_size, fea_len, hidden_size)
         
         # LN -> Attention -> Residual connectiob
-        x = x + self.attn(self.ln1(x), mask, timestamp if self.use_rope else None)
+        x = x + self.attn(self.ln1(x), attn_mask, timestamp if self.use_rope else None)
 
         # LN -> MLP -> Residual connection
         x = x + self.mlp(self.ln2(x))
@@ -275,7 +414,7 @@ class NeuralFactorsProjection(nn.Module):
                 ACT2FN[config.act]
             )
             # Renitialize weights
-            if config.re_init:
+            if config.fixup_init:
                 self.proj[0].weight.data.uniform_(-config.init_range, config.init_range)
                 if config.bias:
                     self.proj[0].bias.data.zero_()
@@ -294,80 +433,71 @@ class NeuralEncoder(nn.Module):
     def __init__(self, config: DictConfig):
         super().__init__()
 
-        self.n_channels = config.embedder.n_channels
-        self.hidden_size = config.embedder.mult * self.n_channels
-        self.use_rope = config.use_rope
+        self.config = config
+        self.hidden_size = config.embedder.mult * config.embedder.n_channels
+        self.int_features = config.embedder.mode == "embed"
+        self.n_layers = config.transformer.n_layers
+
+        # Masker
+        self.masker = Masker(config.masker)
+
+        # Context span mask
+        context_mask = create_context_mask(config.context.forward, config.context.backward, config.embedder.max_F)
+        self.register_buffer("context_mask", context_mask, persistent=False)
+
+        # Normalization and noising layer
+        self.norm_and_noise = NormAndNoise(config.n_channels, config.norm_and_noise)
 
         # Embedding layer
         self.embedder = NeuralEmbeddingLayer(self.hidden_size, config.embedder)
 
-        # Context span mask
-        context_mask = self.create_context_mask(config.context_forward, config.context_backward, config.embedder.max_F)
-        self.register_buffer("context_mask", context_mask, persistent=False)
-
         # Transformer
-        self.n_layers = config.transformer.n_layers
         self.layers = nn.ModuleList([NeuralEncoderLayer(idx, self.hidden_size, config.transformer) for idx in range(self.n_layers)])
-        self.out_norm = ScaleNorm(hidden_size ** 0.5) if config.transformer.use_scalenorm else nn.LayerNorm(self.hidden_size) 
+        self.out_norm = ScaleNorm(self.hidden_size ** 0.5) if config.transformer.use_scalenorm else nn.LayerNorm(self.hidden_size) 
        
         # Out projection
         self.out_proj = NeuralFactorsProjection(self.hidden_size, config.factors)
-
-        # Initialization
-        if config.fixup_init:
-            self.fixup_initialization()
 
 
 
     def forward(
             self, 
-            features:           torch.FloatTensor,   # (batch_size, fea_len, n_channels)
+            features:           torch.FloatTensor,  # (batch_size, fea_len, n_channels)
             features_mask:      torch.LongTensor,   # (batch_size, fea_len)
             features_timestamp: torch.LongTensor,   # (batch_size, fea_len)
             block_idx:          Optional[torch.LongTensor] = None,   # (batch_size)
             date_idx:           Optional[torch.LongTensor] = None,   # (batch_size)
         ) -> torch.FloatTensor:                     # (batch_size, fea_len, hidden_size)
         
-        B, F, _ = features.size() # batch size and seq len
+        B, F, N = features.size() # batch size, seq len, n_channels
         
+        if self.int_features:
+            features = features.to(torch.int64)
+        
+        # Mask neural data
+        features, targets_mask = self.masker(features)
+        targets_mask = targets_mask & features_mask.unsqueeze(-1).expand(B,F,N)
+
+        # Normalize across channels and add noise
+        features = self.norm_and_noise(features)
+
         # Embed neural data
         x = self.embedder(features, features_timestamp, block_idx, date_idx)
 
         
-        # Prepare attention mask
+        # Prepare 
         context_mask = self.context_mask[:F,:F].to(x.device).unsqueeze(0).expand(B,F,F)
         features_mask = features_mask.unsqueeze(1).expand(B,F,F)
-        self_mask = torch.eye(F).to(x.device, context_mask.dtype) # hack so that even padded features attend to themselves and avoid attention issues
-        mask = self_mask | (context_mask & features_mask) if context_mask is not None else features_mask
+        self_mask = torch.eye(F).to(x.device, torch.int64) # hack so that even padded features attend to themselves and avoid attention issues
+        attn_mask = self_mask | (context_mask & features_mask)
         
         
         # Forward transformer
         for idx, layer in enumerate(self.layers):
-            x = layer(x, mask=mask, timestamp=features_timestamp)
+            x = layer(x, attn_mask=attn_mask, timestamp=features_timestamp)
         x = self.out_norm(x)
 
-        return self.out_proj(x)
-
-    
-    # Limit context for encoding
-    def create_context_mask(
-            self, 
-            context_forward,
-            context_backward,
-            max_F,  
-        ) -> torch.LongTensor:          # (max_fea_len, max_fea_len )
-
-        if context_forward == -1 and context_backward == -1:
-            return None
-
-        context_forward = context_forward if context_forward >= 0 else max_F
-        mask = (torch.triu(torch.ones(max_F, max_F), diagonal=-context_forward) == 1).transpose(0, 1)
-        if context_backward > 0:
-            back_mask = (torch.triu(torch.ones(max_F, max_F), diagonal=-context_backward) == 1)
-            mask = mask & back_mask
-
-        return mask
-
+        return self.out_proj(x), targets_mask
 
     
 

@@ -1,5 +1,6 @@
 import torch
 from torch.utils.data import Dataset
+from copy import deepcopy
 
 """ Dataset for finetuning the BCI. If len = None then all the data is used. In "train" and "test" splits, the input_ids, labels, and
     attention_mask are for the prompt+sentence. In "eval" split, these are for prompt only. 
@@ -24,23 +25,23 @@ class BCIDataset(Dataset):
         if self.split == "train" or self.split == "test":
             
             return {
-                "input_ids": self.data["model_inputs"]["input_ids"][idx],
-                "labels": self.data["model_inputs"]["labels"][idx],
-                "attention_mask": self.data["model_inputs"]["attention_mask"][idx],
-                "features": self.data["model_inputs"]["features"][idx],
-                "block_idx": self.data["model_inputs"]["block_idx"][idx],
-                "date_idx": self.data["model_inputs"]["date_idx"][idx],
-                "sentence": self.data["eval"]["sentence"][idx],
+                "input_ids": self.data["model_inputs"]["input_ids"][idx].clone(),
+                "labels": self.data["model_inputs"]["labels"][idx].clone(),
+                "attention_mask": self.data["model_inputs"]["attention_mask"][idx].clone(),
+                "features": self.data["model_inputs"]["features"][idx].clone(),
+                "block_idx": self.data["model_inputs"]["block_idx"][idx].clone(),
+                "date_idx": self.data["model_inputs"]["date_idx"][idx].clone(),
+                "sentence": deepcopy(self.data["eval"]["sentence"][idx]),
             }
         elif self.split == "eval":
             return {
-                "input_ids": self.data["eval"]["prompt_inputs"]["input_ids"],
-                "labels": self.data["eval"]["prompt_inputs"]["input_ids"],
-                "attention_mask": self.data["eval"]["prompt_inputs"]["attention_mask"],
-                "features": self.data["model_inputs"]["features"][idx],
-                "block_idx": self.data["model_inputs"]["block_idx"][idx],
-                "date_idx": self.data["model_inputs"]["date_idx"][idx],
-                "sentence": self.data["eval"]["sentence"][idx],
+                "input_ids": self.data["eval"]["prompt_inputs"]["input_ids"].clone(),
+                "labels": self.data["eval"]["prompt_inputs"]["input_ids"].clone(),
+                "attention_mask": self.data["eval"]["prompt_inputs"]["attention_mask"].clone(),
+                "features": self.data["model_inputs"]["features"][idx].clone(),
+                "block_idx": self.data["model_inputs"]["block_idx"][idx].clone(),
+                "date_idx": self.data["model_inputs"]["date_idx"][idx].clone(),
+                "sentence": deepcopy(self.data["eval"]["sentence"][idx]),
             }
         else:
             raise Exception(f"Split {self.split} not implemented")
@@ -133,26 +134,28 @@ class NeuralPretrainerDataset(Dataset):
         if self.loss_fn == "ctc":
             
             return {
-                "sentence": self.data["eval"]["sentence"][idx],
-                "phonogram": self.data["eval"]["phonogram"][idx],
-                "features": self.data["model_inputs"]["features"][idx],
-                "targets": self.data["model_inputs"]["phonemes_idx"][idx],
-                "block_idx": self.data["model_inputs"]["block_idx"][idx],
-                "date_idx": self.data["model_inputs"]["date_idx"][idx],
+                "features": self.data["model_inputs"]["features"][idx].clone(),
+                "targets": self.data["model_inputs"]["phonemes_idx"][idx].clone(),
+                "block_idx": self.data["model_inputs"]["block_idx"][idx].clone(),
+                "date_idx": self.data["model_inputs"]["date_idx"][idx].clone(),
+                "sentence": deepcopy(self.data["eval"]["sentence"][idx]),
+                "phonogram": deepcopy(self.data["eval"]["phonogram"][idx]),
             }
         elif self.loss_fn == "poisson":
             return {
-                "sentence": self.data["eval"]["sentence"][idx],
-                "features": self.data["model_inputs"]["features"][idx],
-                "targets": self.data["model_inputs"]["features"][idx],
-                "block_idx": self.data["model_inputs"]["block_idx"][idx],
-                "date_idx": self.data["model_inputs"]["date_idx"][idx],
+                "features": self.data["model_inputs"]["features"][idx].clone(),
+                "targets": self.data["model_inputs"]["features"][idx].clone(),
+                "block_idx": self.data["model_inputs"]["block_idx"][idx].clone(),
+                "date_idx": self.data["model_inputs"]["date_idx"][idx].clone(),
+                "sentence": deepcopy(self.data["eval"]["sentence"][idx]),
+                "phonogram": deepcopy(self.data["eval"]["phonogram"][idx]),
             }
         else:
             raise Exception(f"Loss function {self.loss_fn} not implemented")
 
 
 """ Batch data. Returns
+    Tuple(
         Dict {
             "features":             torch.FloatTensor   -   neural signal features
             "features_mask":        torch.LongTensor    -   0. for added time bins, 1. for real time bins
@@ -164,8 +167,10 @@ class NeuralPretrainerDataset(Dataset):
             "date_idx":             torch.LongTensor    -   index of day of experiment
         }
         List[str]                                       -   target sentences
+        List[str]                                       -   target phonograms
+    )
 
-    The first Dict can be dierctly fed to NDT Pretrainer. The List of sentences is used for evaluation
+    The first Dict can be dierctly fed to NDT Pretrainer. The Lists of sentences and phonograms is used for evaluation
 """  
 def pt_pad_collate_fn(blank_id, batch):
     padded_batch = {}

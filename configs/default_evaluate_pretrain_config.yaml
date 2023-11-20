@@ -1,0 +1,18 @@
+seed: 1
+savestring: poisson-pretrain  
+data_file: processed.data
+
+data_dir: /n/home07/djimenezbeneto/lab/datasets/BCI/competitionData
+checkpoint_dir: /n/home07/djimenezbeneto/lab/BCI/checkpoints
+pt_dir: /n/home07/djimenezbeneto/lab/BCI/pt_models
+
+checkpoint_epoch: null   # null to load from pt_dir
+
+split: test
+eval_len: null
+eval_batch_size: 64
+
+smoothing: 5
+
+neural_config: include:configs/default_neural_config.yaml
+neural_pretrainer: include:configs/default_neural_pretrainer_config.yaml

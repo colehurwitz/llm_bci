@@ -2,7 +2,7 @@ import torch
 import torch.nn as nn
 
 from dataclasses import dataclass
-from typing import Optional, Union
+from typing import Optional, Union, Tuple
 
 from transformers.utils import ModelOutput
 
@@ -16,11 +16,13 @@ class NeuralPretrainerOutput(ModelOutput):
     outputs: torch.FloatTensor
     loss: Optional[torch.FloatTensor] = None
     n_examples: Optional[torch.LongTensor] = None
+    targets_mask: Optional[torch.LongTensor] = None
+
 
 
 class NeuralPretrainer(nn.Module):
 
-    def __init__(self, encoder: NeuralEncoder, config: DictConfig, vocab_size=None, blank_id=None):
+    def __init__(self, encoder: NeuralEncoder, config: DictConfig, vocab_size: int = None, blank_id: int = None):
         super().__init__()
 
 
@@ -29,15 +31,11 @@ class NeuralPretrainer(nn.Module):
         self.reduction = config.loss.reduction
 
         if config.loss.type == "poisson":
-            n_outputs = encoder.n_channels
-            self.use_lograte = config.use_lograte
-            self.eps_log = config.eps_log
+            n_outputs = encoder.config.embedder.n_channels
         elif config.loss.type == "ctc":
             n_outputs = vocab_size
         else:
             raise Exception(f"Loss {config.loss.type} not implemented")
-       
-
 
         # Build decoder
         decoder_layers = []
@@ -59,7 +57,7 @@ class NeuralPretrainer(nn.Module):
 
     def forward(
             self, 
-            features:           torch.FloatTensor,   # (batch_size, fea_len, n_channels)
+            features:           torch.FloatTensor,  # (batch_size, fea_len, n_channels)
             features_mask:      torch.LongTensor,   # (batch_size, fea_len)
             features_timestamp: torch.LongTensor,   # (batch_size, fea_len)
             targets:            Union[torch.LongTensor, torch.FloatTensor],   # (batch_size, tar_len)
@@ -69,21 +67,23 @@ class NeuralPretrainer(nn.Module):
             date_idx:           Optional[torch.LongTensor] = None,   # (batch_size)
         ) -> NeuralPretrainerOutput:                    
 
-        # encode neural data
-        x = self.encoder(features, features_mask, features_timestamp, block_idx, date_idx)
+        if self.loss_type == "poisson" and self.encoder.int_features:
+            targets = targets.to(torch.int64)
 
+        # Encode neural data
+        x, targets_mask = self.encoder(features, features_mask, features_timestamp, block_idx, date_idx)
 
-        # transform neural embeddings into rates/logits
+        # Transform neural embeddings into rates/logits
         outputs = self.decoder(x)
 
         
-        # compute the loss over the unmasked outputs
+        # Compute the loss over unmasked outputs
         if self.loss_type == "poisson":
-            if self.use_lograte:
-                targets = torch.log(targets + self.eps_log)
-            masked_loss = self.loss(outputs, targets) * features_mask.unsqueeze(-1).expand_as(targets)
+            loss = self.loss(outputs, targets) * targets_mask
+            n_examples = targets_mask.sum()
         elif self.loss_type == "ctc":
             loss = self.loss(outputs.transpose(0,1), targets, features_len, targets_len)
+            n_examples = len(features)
 
         # Reduce loss
         if self.reduction == "sum":
@@ -94,5 +94,6 @@ class NeuralPretrainer(nn.Module):
         return NeuralPretrainerOutput(
             outputs=outputs,
             loss=loss,
-            n_examples=len(features),
+            n_examples=n_examples,
+            targets_mask=targets_mask,
         )

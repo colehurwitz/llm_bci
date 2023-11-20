@@ -26,8 +26,6 @@ def main(args):
 
     reset_seeds(config.seed)
     
-
-
     if config.checkpoint_epoch == None:
         # Load merged model
         ft_dir = os.path.join(config.ft_dir,config.savestring)
@@ -48,8 +46,8 @@ def main(args):
     pad_id = tokenizer.eos_token_id
 
     # Load data
-    data = torch.load(os.path.join(config.data_dir, config.data_file))[config.split]
-    eval_dataset = BCIDataset(data, split="eval", len=config.eval_len)
+    eval_data = torch.load(os.path.join(config.data_dir, config.data_file))[config.split]
+    eval_dataset = BCIDataset(eval_data, split="eval", len=config.eval_len)
     eval_dataloader = DataLoader(
         eval_dataset, collate_fn=partial(bci_pad_collate_fn,pad_id), batch_size=config.eval_batch_size, pin_memory=True
     )

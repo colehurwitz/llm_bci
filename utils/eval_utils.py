@@ -1,5 +1,8 @@
 from copy import deepcopy
 
+import torch
+import torch.nn.functional as F
+
 from seq_alignment import global_similarity
 
 
@@ -46,3 +49,23 @@ def format_ctc(pred, vocab, blank_id):
             phonogram.append(vocab[i])
             last = deepcopy(i)
     return phonogram
+
+""" Get RMS between predicted rates and smoothed spiking data
+"""
+def smoothed_RMS(preds, features, targets_mask, width, use_lograte):
+    
+    # Exponentiate to get actual firing rates from log-rates
+    if use_lograte:
+        preds = torch.exp(preds)
+    
+    # Create targets by averaging spike counts
+    kernel =  torch.ones(width).view(1,1,-1)
+    targets = []
+    for f in features:
+        targets.append((F.conv1d(f.unsqueeze(1), kernel, padding="same")/width).squeeze(1))
+    targets = torch.stack(targets, 0 )
+
+
+    mse = F.mse_loss(preds, targets, reduction="none")
+    
+    return (mse * targets_mask).sum(), mse.sum()

@@ -1,6 +1,6 @@
 seed: 1
-savestring: test2
-data_file: processed-zscore.data
+savestring: poisson-pretrain  
+data_file: processed.data
 
 model_dir: null  # pretrained model to load to continue pretraining, null to start from scratch
 data_dir: /n/home07/djimenezbeneto/lab/datasets/BCI/competitionData
@@ -20,8 +20,8 @@ trainer:
 
 optimizer:
   lr: 1.e-3
-  wd: 1.e-5
-  warmup_ratio: 0.0
+  wd: 0.0
+  warmup_steps: 1000 
 
 neural_config: include:configs/default_neural_config.yaml
 neural_pretrainer: include:configs/default_neural_pretrainer_config.yaml

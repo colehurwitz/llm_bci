@@ -135,15 +135,15 @@ def p_to_i(p):
                 "attention_mask":   List[torch.LongTensor]  -   0 for masked tokens, 1 for visible tokens
                 "labels":           List[torch.LongTensor]  -   same as input_ids for the sentence, mask (-100) for pad and prompt
                 "phonemes_idx":     List[torch.LongTensor]  -   indexing of phonemes/subwords for each sentence
-                "features":         List[torch.FloatTensor]  -   neural signal features
+                "features":         List[torch.FloatTensor] -   neural signal features
                 "block_idx":        List[torch.LongTensor]  -   index of block of experiment
                 "date_idx":         List[torch.LongTensor]  -   index of day of experiment
             }
             "eval" {
-                "sentence":        List[string]             -   target sentences
+                "sentence":         List[str]               -   target sentences
                 "phonogram":        List[str]               -   sentences decomposed into phonemes/subwords
-                "date":            List[Tuple]              -   day of the experiment
-                "block":           List[int]                -   block of the experiment
+                "date":             List[Tuple]             -   day of the experiment
+                "block":            List[int]               -   block of the experiment
                 "prompt_inputs" {
                     "input_ids":      torch.LongTensor      -   token ids for the prompt
                     "attention_mask": torch.LongTensor      -   0 for masked tokens, 1 for visible tokens

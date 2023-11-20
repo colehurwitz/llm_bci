@@ -2,11 +2,10 @@
 # CTC
 
 
-# Poisson
-use_lograte: true
-eps_log: 1e-7
+# Poisson MM
+use_lograte: true     # true to treat the model predicitons as logrates (thus exponentiate before PoissonNLL)
 
 loss: 
-  type: ctc       # ctc or poisson
+  type: poisson       # ctc or poisson
   reduction: sum  # sum, mean or none
   

@@ -42,9 +42,11 @@ def update_config_rec(new_config, config):
     if isinstance(config, dict):
         # Force new fields in new_config to update with fields from config
         if not isinstance(new_config,dict):
+            print("Created new subdict")
             new_config = {}
         for field in config:
             if not field in new_config:
+                print(f"Creating new field {field}")
                 new_config[field] = {}
             new_config[field] = update_config_rec(new_config[field], config[field])
     else:

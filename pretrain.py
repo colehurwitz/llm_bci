@@ -34,6 +34,7 @@ def main(args):
 
     accelerator = Accelerator()
     reset_seeds(config.seed)
+    accelerator.print(f"Starting run {config.savestring}")
     accelerator.print(config)
 
     # Create saving paths
@@ -91,7 +92,7 @@ def main(args):
 
     lr_scheduler = get_linear_schedule_with_warmup(
         optimizer=optimizer,
-        num_warmup_steps=round(config.optimizer.warmup_ratio * len(train_dataloader) * config.trainer.num_epochs),
+        num_warmup_steps=config.optimizer.warmup_steps,
         num_training_steps=(len(train_dataloader) * config.trainer.num_epochs),
     )
 
@@ -131,7 +132,7 @@ def main(args):
             writer.add_scalar("Loss/train_iter",loss.detach().float()/outputs.n_examples, 1+step+(epoch-1)*len(train_dataloader))
 
             # Get phoneme error rate (every 15 steps to save time)
-            if config.neural_pretrainer.loss.type == "ctc" and step%15 == 0:
+            if config.neural_pretrainer.loss.type == "ctc" and step%100 == 0:
                 preds = torch.argmax(outputs.outputs, -1)
                 preds = [" ".join(format_ctc(pred, vocab, blank_id)) for pred in preds]
                 phonograms = [" ".join(p) for p in phonograms]
@@ -141,16 +142,16 @@ def main(args):
                 
                 preds = [pred.replace(" ","").replace("SIL"," SIL ") for pred in preds]
                 phonograms = [p.replace(" ","").replace("SIL"," SIL ") for p in phonograms]
-                for pred, p, s in zip(preds, phonograms, sentences):
-                    print(f"Sentence: {s} \nPhonograms: {p} \nPrediction: {pred} \n")
+                # for pred, p, s in zip(preds, phonograms, sentences):
+                #     print(f"Sentence: {s} \nPhonograms: {p} \nPrediction: {pred} \n")
                 writer.add_scalar("PER/train_iter",errors/phonemes, 1+step+(epoch-1)*len(train_dataloader))
 
 
         # Log to tensorboard
         train_epoch_loss = train_loss / train_examples
         writer.add_scalar("Loss/train",train_epoch_loss,epoch)
-        train_epoch_PER = train_errors / train_phonemes
-        writer.add_scalar("PER/train",train_PER,epoch)
+        train_epoch_PER = train_errors / train_phonemes if config.neural_pretrainer.loss.type == "ctc" else 0.
+        writer.add_scalar("PER/train",train_epoch_PER,epoch)
 
 
         print(f"Evaluation epoch {epoch}")
@@ -173,7 +174,7 @@ def main(args):
             test_examples += outputs.n_examples
 
             # Log to tensorboard
-            writer.add_scalar("Loss/test_iter",loss.detach().float()/outputs.n_examples,1+step+(epoch-1)*len(test_dataloader))
+            writer.add_scalar("Loss/test_iter",outputs.loss.detach().float()/outputs.n_examples,1+step+(epoch-1)*len(test_dataloader))
             
             # Get phoneme error rate
             if config.neural_pretrainer.loss.type == "ctc":
@@ -184,14 +185,14 @@ def main(args):
                 test_errors += errors
                 test_phonemes += phonemes
                 
-                for p, s in zip(preds, sentences):
-                    print(f"Sentence: {s} \nPrediction: {p} \n")
+                # for p, s in zip(preds, sentences):
+                #     print(f"Sentence: {s} \nPrediction: {p} \n")
                 writer.add_scalar("PER/test_iter",errors/phonemes, 1+step+(epoch-1)*len(test_dataloader))
         
         # Log to tensorboard
         test_epoch_loss = test_loss / test_examples
         writer.add_scalar("Loss/test",test_epoch_loss,epoch)
-        test_epoch_PER = test_errors / test_phonemes
+        test_epoch_PER = test_errors / test_phonemes if config.neural_pretrainer.loss.type == "ctc" else 0.
         writer.add_scalar("PER/test",test_epoch_PER,epoch)
 
         accelerator.print(f"{epoch=}: {train_epoch_loss=} {test_epoch_loss=} {test_epoch_PER=} ")
@@ -199,8 +200,14 @@ def main(args):
         # Save checkpoints 
         must_save = (config.trainer.save_every is not None and epoch%config.trainer.save_every == 0) or epoch in config.trainer.save_epochs
         if must_save:
-            accelerator.print(f"Saving checkpoint at epoch {epoch}")
-            torch.save(model.state_dict(), os.path.join(checkpoint_dir,f"EP{epoch}"))
+            save_to_path = os.path.join(checkpoint_dir,f"EP{epoch}")
+            if not os.path.exists(save_to_path):
+                os.makedirs(save_to_path)
+            accelerator.print(f"Saving checkpoint at epoch {epoch} to {save_to_path}")
+            torch.save(model.state_dict(), save_to_path)
+            torch.save(model.encoder.state_dict(), os.path.join(save_to_path,"encoder.bin"))
+            torch.save(model.decoder.state_dict(), os.path.join(save_to_path,"decoder.bin"))
+            torch.save(config, os.path.join(save_to_path,"config"))
 
         accelerator.wait_for_everyone()
         
@@ -210,6 +217,7 @@ def main(args):
     # Save pretrained model
     torch.save(model.encoder.state_dict(), os.path.join(pt_dir,"encoder.bin"))
     torch.save(model.decoder.state_dict(), os.path.join(pt_dir,"decoder.bin"))
+    torch.save(config, os.path.join(pt_dir,"config.bin"))
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()

@@ -53,7 +53,7 @@ def main(args):
     data = torch.load(os.path.join(config.data_dir, config.data_file))
 
     # Get vocabulary info
-    vocab = data["train"]["eval"]["vocab"]
+    vocab = data["train"]["eval"]["vocab"] if config.neural_pretrainer.loss.type == "ctc" else None
     blank_id = vocab.index("BLANK") if config.neural_pretrainer.loss.type == "ctc" else None
     vocab_size = len(vocab)  if config.neural_pretrainer.loss.type == "ctc" else None
 
@@ -73,6 +73,7 @@ def main(args):
 
 
     # Create encoder model for pretraining
+    config.neural_config.embedder.n_channels = train_data["model_inputs"]["features"].shape[-1]
     encoder = NeuralEncoder(config.neural_config)
     model = NeuralPretrainer(encoder, config.neural_pretrainer, vocab_size, blank_id)
     if config.model_dir is not None:  

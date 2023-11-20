@@ -1,6 +1,6 @@
 seed: 1
 savestring: poisson-pretrain  
-data_file: processed.data
+data_file: mc_maze_20_train.pth
 
 model_dir: null  # pretrained model to load to continue pretraining, null to start from scratch
 data_dir: /n/home07/djimenezbeneto/lab/datasets/BCI/competitionData

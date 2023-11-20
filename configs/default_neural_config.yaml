@@ -23,7 +23,7 @@ norm_and_noise:
 
 # Embedding layer
 embedder:
-  n_channels: 256       # number of neurons recorded 
+  n_channels: 182       # number of neurons recorded 
   n_blocks: 24          # number of blocks of experiments
   n_dates: 24           # number of days of experiments
   max_F: 1024           # max feature len in timesteps
@@ -39,13 +39,13 @@ embedder:
   fixup_init: true      # modify weight initialization
   init_range: 0.1       # initialization range for embeddings
   spike_log_init: false # special initialization 
-  max_spikes: 60        # max number of spikes in a single time bin
+  max_spikes: 10        # max number of spikes in a single time bin
 
 
 
 # Transformer
 transformer:
-  n_layers: 2           # number of transformer layers
+  n_layers: 6           # number of transformer layers
   use_scalenorm: false  # use scalenorm  instead of layernorm
   use_rope: false       # use rotary postional encoding
   rope_theta: 10000.0   # rope angle of rotation
@@ -56,7 +56,7 @@ transformer:
   act: relu             # activiation function in mlp layers
   mlp_bias: false       # use bias in the mlp layers
   
-  dropout: 0.0          # dropout in transformer layers
+  dropout: 0.5          # dropout in transformer layers
   fixup_init: false     # modify weight initialization
 
 # Projection to factor space

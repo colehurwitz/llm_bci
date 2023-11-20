@@ -139,7 +139,7 @@ def p_to_i(p):
                 "block_idx":        List[torch.LongTensor]  -   index of block of experiment
                 "date_idx":         List[torch.LongTensor]  -   index of day of experiment
             }
-            "eval" {
+            "info" {
                 "sentence":         List[str]               -   target sentences
                 "phonogram":        List[str]               -   sentences decomposed into phonemes/subwords
                 "date":             List[Tuple]             -   day of the experiment
@@ -203,13 +203,13 @@ def preprocess_function(examples, tokenizer, g2p,  prompt = ""):
         model_inputs["date_idx"] = [torch.tensor(row,dtype=torch.int64) for  row in examples['date_idx'] ]
 
         # Keep to evaluate word error rate
-        eval = {}
-        eval["sentence"] = sentence
-        eval["phonogram"] = phonogram
-        eval["date"] = examples["date"]
-        eval["block"] = examples["block"]
-        eval["prompt_inputs"] = prompt_inputs
-        eval["vocab"] = PHONEMES_VOCAB
+        info = {}
+        info["sentence"] = sentence
+        info["phonogram"] = phonogram
+        info["date"] = examples["date"]
+        info["block"] = examples["block"]
+        info["prompt_inputs"] = prompt_inputs
+        info["vocab"] = PHONEMES_VOCAB
 
         # To check that dtypes are adequate
         # print(model_inputs["features"][0])
@@ -223,7 +223,7 @@ def preprocess_function(examples, tokenizer, g2p,  prompt = ""):
 
         return {
             "model_inputs": model_inputs,
-            "eval": eval
+            "info": info
         }
 
 

@@ -77,8 +77,11 @@ class Masker(nn.Module):
         mask_ratio = deepcopy(self.ratio)
 
         # Expand mask
-        if self.mode == "timestep" and torch.bernoulli(torch.tensor(self.expand_prob).float())
-            timespan = torch.randint(1, self.max_timespan+1, (1, )).item() 
+        if self.mode == "timestep":
+            if torch.bernoulli(torch.tensor(self.expand_prob).float()):
+                timespan = torch.randint(1, self.max_timespan+1, (1, )).item() 
+            else:
+                timespan = 1
             mask_ratio = mask_ratio/timespan
 
         # Get masking probabilities

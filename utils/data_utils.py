@@ -3,7 +3,7 @@ from torch.utils.data import Dataset
 from copy import deepcopy
 
 """ Dataset for finetuning the BCI. If len = None then all the data is used. In "train" and "test" splits, the input_ids, labels, and
-    attention_mask are for the prompt+sentence. In "eval" split, these are for prompt only. 
+    attention_mask are for the prompt+sentence. In "info" split, these are for prompt only. 
 """
 class BCIDataset(Dataset):
 
@@ -14,8 +14,8 @@ class BCIDataset(Dataset):
         
         if len is not None:
             self.data["model_inputs"] = {key: self.data["model_inputs"][key][:len] for key in self.data["model_inputs"]}
-            self.data["eval"]["sentence"] = self.data["eval"]["sentence"][:len]
-            self.data["eval"]["phonemes"] = self.data["eval"]["phonemes"][:len]
+            self.data["info"]["sentence"] = self.data["info"]["sentence"][:len]
+            self.data["info"]["phonemes"] = self.data["info"]["phonemes"][:len]
 
     def __len__(self):
         return len(self.data["model_inputs"]["input_ids"])
@@ -31,17 +31,17 @@ class BCIDataset(Dataset):
                 "features": self.data["model_inputs"]["features"][idx].clone(),
                 "block_idx": self.data["model_inputs"]["block_idx"][idx].clone(),
                 "date_idx": self.data["model_inputs"]["date_idx"][idx].clone(),
-                "sentence": deepcopy(self.data["eval"]["sentence"][idx]),
+                "sentence": deepcopy(self.data["info"]["sentence"][idx]),
             }
-        elif self.split == "eval":
+        elif self.split == "info":
             return {
-                "input_ids": self.data["eval"]["prompt_inputs"]["input_ids"].clone(),
-                "labels": self.data["eval"]["prompt_inputs"]["input_ids"].clone(),
-                "attention_mask": self.data["eval"]["prompt_inputs"]["attention_mask"].clone(),
+                "input_ids": self.data["info"]["prompt_inputs"]["input_ids"].clone(),
+                "labels": self.data["info"]["prompt_inputs"]["input_ids"].clone(),
+                "attention_mask": self.data["info"]["prompt_inputs"]["attention_mask"].clone(),
                 "features": self.data["model_inputs"]["features"][idx].clone(),
                 "block_idx": self.data["model_inputs"]["block_idx"][idx].clone(),
                 "date_idx": self.data["model_inputs"]["date_idx"][idx].clone(),
-                "sentence": deepcopy(self.data["eval"]["sentence"][idx]),
+                "sentence": deepcopy(self.data["info"]["sentence"][idx]),
             }
         else:
             raise Exception(f"Split {self.split} not implemented")
@@ -121,10 +121,14 @@ class NeuralPretrainerDataset(Dataset):
         self.data = data
         self.loss_fn = loss_fn
         
+        self.has_sentence = "info" in self.data and "sentence" in self.data["info"]
+        self.has_phonogram = "info" in self.data and "phonogram" in self.data["info"]
         if len is not None:
             self.data["model_inputs"] = {key: self.data["model_inputs"][key][:len] for key in self.data["model_inputs"]}
-            self.data["eval"]["sentence"] = self.data["eval"]["sentence"][:len]
-            self.data["eval"]["phonogram"] = self.data["eval"]["phonogram"][:len]
+            if self.has_sentence :
+                self.data["info"]["sentence"] = self.data["info"]["sentence"][:len] 
+            if self.has_phonogram:
+                self.data["info"]["phonogram"] = self.data["info"]["phonogram"][:len]
 
     def __len__(self):
         return len(self.data["model_inputs"]["features"])
@@ -136,19 +140,19 @@ class NeuralPretrainerDataset(Dataset):
             return {
                 "features": self.data["model_inputs"]["features"][idx].clone(),
                 "targets": self.data["model_inputs"]["phonemes_idx"][idx].clone(),
-                "block_idx": self.data["model_inputs"]["block_idx"][idx].clone(),
-                "date_idx": self.data["model_inputs"]["date_idx"][idx].clone(),
-                "sentence": deepcopy(self.data["eval"]["sentence"][idx]),
-                "phonogram": deepcopy(self.data["eval"]["phonogram"][idx]),
+                "block_idx": self.data["model_inputs"]["block_idx"][idx].clone() if "block_idx" in self.data["model_inputs"] else torch.tensor(0, dtype=torch.int64),
+                "date_idx": self.data["model_inputs"]["date_idx"][idx].clone() if "date_idx" in self.data["model_inputs"] else torch.tensor(0, dtype=torch.int64),
+                "sentence": deepcopy(self.data["info"]["sentence"][idx]) if self.has_sentence else [],
+                "phonogram": deepcopy(self.data["info"]["phonogram"][idx]) if self.has_phonogram else [],
             }
         elif self.loss_fn == "poisson":
             return {
                 "features": self.data["model_inputs"]["features"][idx].clone(),
                 "targets": self.data["model_inputs"]["features"][idx].clone(),
-                "block_idx": self.data["model_inputs"]["block_idx"][idx].clone(),
-                "date_idx": self.data["model_inputs"]["date_idx"][idx].clone(),
-                "sentence": deepcopy(self.data["eval"]["sentence"][idx]),
-                "phonogram": deepcopy(self.data["eval"]["phonogram"][idx]),
+                "block_idx": self.data["model_inputs"]["block_idx"][idx].clone() if "block_idx" in self.data["model_inputs"] else torch.tensor(0, dtype=torch.int64),
+                "date_idx": self.data["model_inputs"]["date_idx"][idx].clone() if "date_idx" in self.data["model_inputs"] else torch.tensor(0, dtype=torch.int64),
+                "sentence": deepcopy(self.data["info"]["sentence"][idx]) if self.has_sentence else [],
+                "phonogram": deepcopy(self.data["info"]["phonogram"][idx]) if self.has_phonogram else [],
             }
         else:
             raise Exception(f"Loss function {self.loss_fn} not implemented")
@@ -216,14 +220,14 @@ def pt_pad_collate_fn(blank_id, batch):
 
     padded_batch = {key: torch.stack(padded_batch[key]) for key in padded_batch}
     
-    # print("features", padded_batch["features"][:4], padded_batch["features"].dtype)
-    # print("features_mask", padded_batch["features_mask"][:4], padded_batch["features_mask"].dtype)
-    # print("features_timestamp", padded_batch["features_timestamp"][:4], padded_batch["features_timestamp"].dtype)
-    # print("targets", padded_batch["targets"][:4], padded_batch["targets"].dtype)
-    # print("features_len", padded_batch["features_len"][:4], padded_batch["features_len"].dtype)
-    # print("targets_len", padded_batch["targets_len"][:4], padded_batch["targets_len"].dtype)
-    # print("block_idx", padded_batch["block_idx"][:4], padded_batch["block_idx"].dtype)
-    # print("date_idx", padded_batch["date_idx"][:4], padded_batch["date_idx"].dtype)
+    # print("features", padded_batch["features"][:4], padded_batch["features"].shape, padded_batch["features"].dtype)
+    # print("features_mask", padded_batch["features_mask"][:4], padded_batch["features_mask"].shape, padded_batch["features_mask"].dtype)
+    # print("features_timestamp", padded_batch["features_timestamp"][:4], padded_batch["features_timestamp"].shape, padded_batch["features_timestamp"].dtype)
+    # print("targets", padded_batch["targets"][:4], padded_batch["targets"].shape, padded_batch["targets"].dtype)
+    # print("features_len", padded_batch["features_len"][:4], padded_batch["features_len"].shape, padded_batch["features_len"].dtype)
+    # print("targets_len", padded_batch["targets_len"][:4], padded_batch["targets_len"].shape, padded_batch["targets_len"].dtype)
+    # print("block_idx", padded_batch["block_idx"][:4], padded_batch["block_idx"].shape, padded_batch["block_idx"].dtype)
+    # print("date_idx", padded_batch["date_idx"][:4], padded_batch["date_idx"].shape, padded_batch["date_idx"].dtype)
 
     return padded_batch, [batch[i]["phonogram"] for i in range(len(batch))], [batch[i]["sentence"] for i in range(len(batch))]
         

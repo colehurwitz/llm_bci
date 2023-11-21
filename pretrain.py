@@ -16,7 +16,8 @@ from models.neural_pretrainer import NeuralPretrainer
 
 from utils.config_utils import update_config, config_from_kwargs, ParseKwargs
 from utils.data_utils import NeuralPretrainerDataset, pt_pad_collate_fn
-from utils.eval_utils import format_ctc, word_error_count
+from utils.eval_utils import format_ctc, word_error_count, smoothed_RMS
+from utils.optim_utils import WarmupCosineScheduler
 
 DEFAULT_CONFIG_FILE = "configs/default_pretrain_config.yaml"
 
@@ -27,6 +28,7 @@ def reset_seeds(seed):
     # torch.backends.cudnn.benchmark = False
 
 def main(args):
+    torch.set_printoptions(profile="full")
     
     # Get configs
     config = update_config(DEFAULT_CONFIG_FILE, args.config_file if args.config_file != "none" else None) 
@@ -78,8 +80,8 @@ def main(args):
     model = NeuralPretrainer(encoder, config.neural_pretrainer, vocab_size, blank_id)
     if config.model_dir is not None:  
         print(f"Loading model from {config.model_dir}")
-        model.encoder.load_state_dict(torch.load(os.path.join(config.model_dir,"encoder.bin")))
-        model.decoder.load_state_dict(torch.load(os.path.join(config.model_dir,"decoder.bin")))
+        model.encoder.load_state_dict(torch.load(os.path.join(config.model_dir,"encoder.pth")))
+        model.decoder.load_state_dict(torch.load(os.path.join(config.model_dir,"decoder.pth")))
     else:
         print("Creating model from scratch")
 
@@ -89,13 +91,26 @@ def main(args):
     
     
     # Setup optimizer
-    optimizer = torch.optim.AdamW(model.parameters(), lr=config.optimizer.lr, weight_decay=config.optimizer.wd)
+    optimizer = torch.optim.AdamW(model.parameters(), lr=config.optimizer.lr, weight_decay=config.optimizer.wd, eps=config.optimizer.eps)
 
-    lr_scheduler = get_linear_schedule_with_warmup(
-        optimizer=optimizer,
-        num_warmup_steps=config.optimizer.warmup_steps,
-        num_training_steps=(len(train_dataloader) * config.trainer.num_epochs),
-    )
+    if config.optimizer.scheduler == "linear":
+        lr_scheduler = get_linear_schedule_with_warmup(
+            optimizer=optimizer,
+            num_warmup_steps=config.optimizer.warmup_steps,
+            num_training_steps=(len(train_dataloader) * config.trainer.num_epochs),
+        )
+    elif config.optimizer.scheduler == "cosine":
+        lr_scheduler = WarmupCosineScheduler(
+            optimizer=optimizer,
+            warmup_epochs=config.optimizer.warmup_epochs,
+            warmup_lr=0,
+            num_epochs=config.trainer.num_epochs,
+            base_lr=config.optimizer.lr,
+            final_lr=0,
+            iter_per_epoch=len(train_dataloader)
+        )
+    else:
+        raise Exception(f"Scheduler '{config.optimizer.scheduler}' not implemented")
 
     # Prepare model for distributed training
     model, train_dataloader, test_dataloader, optimizer, lr_scheduler = accelerator.prepare(
@@ -107,22 +122,41 @@ def main(args):
     for epoch in range(1,config.trainer.num_epochs+1):
         
         print(f"Training epoch {epoch}")
+        
         model.train()
 
         # Train metrics
-        train_loss = 0.
-        train_examples = 0
-        train_errors = 0.
-        train_phonemes = 0
- 
+        train_loss = []
+        train_examples = []
+
+        # Poisson metrics
+        train_RMS = []
+        train_all_RMS = []
+        train_all_examples = []
+        
+        # CTC metrics
+        train_errors = []
+        train_phonemes = []
+
+        # To save
+        train_features = []
+        train_features_mask = []
+        train_preds = []
+        train_preds_mask = []
+
+        # Schedule for the probability of expanding the mask
+        if config.masker_scheduler.do:
+            expand_prob = max(0, min(1, (epoch - config.masker_scheduler.start) / (config.masker_scheduler.end - config.masker_scheduler.start)))
+            model.encoder.masker.expand_prob = expand_prob
+
         for step, (batch, phonograms, sentences) in enumerate(tqdm(train_dataloader)):
     
             outputs = model(**batch)
             loss = outputs.loss
 
-            # Gather train metrics
-            train_loss += loss.detach().float()
-            train_examples += outputs.n_examples
+            # Gather general train metrics
+            train_loss.append(loss.detach().item())
+            train_examples.append(outputs.n_examples)
 
             # Backward pass
             accelerator.backward(loss)
@@ -130,39 +164,76 @@ def main(args):
             lr_scheduler.step()
             optimizer.zero_grad()
 
-            writer.add_scalar("Loss/train_iter",loss.detach().float()/outputs.n_examples, 1+step+(epoch-1)*len(train_dataloader))
-
-            # Get phoneme error rate (every 15 steps to save time)
+            # Gather loss-specific train metrics
             if config.neural_pretrainer.loss.type == "ctc" and step%100 == 0:
                 preds = torch.argmax(outputs.outputs, -1)
                 preds = [" ".join(format_ctc(pred, vocab, blank_id)) for pred in preds]
                 phonograms = [" ".join(p) for p in phonograms]
                 errors, phonemes = word_error_count(preds, phonograms)
-                train_errors += errors
-                train_phonemes += phonemes
+                train_errors.append(errors)
+                train_phonemes.append(phonemes)
                 
                 preds = [pred.replace(" ","").replace("SIL"," SIL ") for pred in preds]
                 phonograms = [p.replace(" ","").replace("SIL"," SIL ") for p in phonograms]
                 # for pred, p, s in zip(preds, phonograms, sentences):
                 #     print(f"Sentence: {s} \nPhonograms: {p} \nPrediction: {pred} \n")
                 writer.add_scalar("PER/train_iter",errors/phonemes, 1+step+(epoch-1)*len(train_dataloader))
+            elif config.neural_pretrainer.loss.type == "poisson":
+                features_mask = batch["features_mask"].detach().cpu()
+                features = batch["features"].detach().cpu()
+                preds = outputs.outputs.detach().cpu()
+                targets_mask = outputs.targets_mask.detach().cpu()
+                if config.neural_pretrainer.use_lograte:
+                    preds = torch.exp(preds)
+                RMS, all_RMS = smoothed_RMS(preds, features, targets_mask, config.eval.smoothing)
+                train_RMS.append(RMS)
+                train_all_RMS.append(all_RMS)
+                train_all_examples.append(features.nelement())
+                train_features.append(features)
+                train_features_mask.append(features_mask)
+                train_preds.append(preds)
+                train_preds_mask.append(targets_mask)
 
 
+                writer.add_scalar("RMS/train_iter",train_RMS[-1]/train_examples[-1], 1+step+(epoch-1)*len(train_dataloader))
+                writer.add_scalar("AllRMS/train_iter",train_all_RMS[-1]/train_all_examples[-1], 1+step+(epoch-1)*len(train_dataloader))
+
+            writer.add_scalar("Loss/train_iter",train_loss[-1]/train_examples[-1], 1+step+(epoch-1)*len(train_dataloader))
+            
         # Log to tensorboard
-        train_epoch_loss = train_loss / train_examples
+        train_epoch_loss = sum(train_loss) / sum(train_examples)
         writer.add_scalar("Loss/train",train_epoch_loss,epoch)
-        train_epoch_PER = train_errors / train_phonemes if config.neural_pretrainer.loss.type == "ctc" else 0.
-        writer.add_scalar("PER/train",train_epoch_PER,epoch)
+        if config.neural_pretrainer.loss.type == "ctc":
+            train_epoch_PER = sum(train_errors) / sum(train_phonemes)
+            writer.add_scalar("PER/train",train_epoch_PER,epoch)
+        elif config.neural_pretrainer.loss.type == "poisson":
+            train_epoch_RMS = sum(train_RMS) / sum(train_examples)
+            writer.add_scalar("RMS/train",train_epoch_RMS,epoch)
+            train_epoch_all_RMS = sum(train_all_RMS) / sum(train_all_examples)
+            writer.add_scalar("RMS/train",train_epoch_all_RMS,epoch)
 
 
         print(f"Evaluation epoch {epoch}")
         model.eval()
 
         # Test metrics
-        test_loss = 0.
-        test_examples = 0
-        test_errors = 0.
-        test_phonemes = 0
+        test_loss = []
+        test_examples = []
+
+        # Poisson metrics
+        test_RMS = []
+        test_all_RMS = []
+        test_all_examples = []
+        
+        # CTC metrics
+        test_errors = []
+        test_phonemes = []
+
+        # To save
+        test_features = []
+        test_features_mask = []
+        test_preds = []
+        test_preds_mask = []
 
         for step, (batch, phonograms, sentences) in enumerate(tqdm(test_dataloader)):
 
@@ -170,33 +241,57 @@ def main(args):
             with torch.no_grad():
                 outputs = model(**batch)
             
-            # Gather test metrics
-            test_loss += outputs.loss.detach().float()
-            test_examples += outputs.n_examples
+            # Gather general test metrics
+            test_loss.append(outputs.loss.detach().item())
+            test_examples.append(outputs.n_examples)
 
-            # Log to tensorboard
-            writer.add_scalar("Loss/test_iter",outputs.loss.detach().float()/outputs.n_examples,1+step+(epoch-1)*len(test_dataloader))
             
-            # Get phoneme error rate
+            # Gather loss-specific test metrics
             if config.neural_pretrainer.loss.type == "ctc":
                 preds = torch.argmax(outputs.outputs,-1)
                 preds = [" ".join(format_ctc(pred, vocab, blank_id)) for pred in preds]
                 phonograms = [" ".join(p) for p in phonograms]
                 errors, phonemes = word_error_count(preds, phonograms)
-                test_errors += errors
-                test_phonemes += phonemes
+                test_errors.append(errors)
+                test_phonemes.append(phonemes)
                 
                 # for p, s in zip(preds, sentences):
                 #     print(f"Sentence: {s} \nPrediction: {p} \n")
                 writer.add_scalar("PER/test_iter",errors/phonemes, 1+step+(epoch-1)*len(test_dataloader))
-        
-        # Log to tensorboard
-        test_epoch_loss = test_loss / test_examples
-        writer.add_scalar("Loss/test",test_epoch_loss,epoch)
-        test_epoch_PER = test_errors / test_phonemes if config.neural_pretrainer.loss.type == "ctc" else 0.
-        writer.add_scalar("PER/test",test_epoch_PER,epoch)
+            elif config.neural_pretrainer.loss.type == "poisson":
+                features_mask = batch["features_mask"].detach().cpu()
+                features = batch["features"].detach().cpu()
+                targets_mask = outputs.targets_mask.detach().cpu()
+                preds = outputs.outputs.detach().cpu()
+                if config.neural_pretrainer.use_lograte:
+                    preds = torch.exp(preds)
+                RMS, all_RMS = smoothed_RMS(preds, features, targets_mask, config.eval.smoothing)
+                test_RMS.append(RMS)
+                test_all_RMS.append(all_RMS)
+                test_all_examples.append(features.nelement())
+                test_features.append(features)
+                test_features_mask.append(features_mask)
+                test_preds.append(preds)
+                test_preds_mask.append(targets_mask)
 
-        accelerator.print(f"{epoch=}: {train_epoch_loss=} {test_epoch_loss=} {test_epoch_PER=} ")
+                writer.add_scalar("RMS/test_iter",test_RMS[-1]/test_examples[-1], 1+step+(epoch-1)*len(test_dataloader))
+                writer.add_scalar("AllRMS/test_iter",test_all_RMS[-1]/test_all_examples[-1], 1+step+(epoch-1)*len(test_dataloader))
+
+            writer.add_scalar("Loss/test_iter",test_loss[-1]/test_examples[-1],1+step+(epoch-1)*len(test_dataloader))
+            
+        # Log to tensorboard
+        test_epoch_loss = sum(test_loss) / sum(test_examples)
+        writer.add_scalar("Loss/test",test_epoch_loss,epoch)
+        if config.neural_pretrainer.loss.type == "ctc":
+            test_epoch_PER = sum(test_errors) / sum(test_phonemes)
+            writer.add_scalar("PER/test",test_epoch_PER,epoch)
+        elif config.neural_pretrainer.loss.type == "poisson":
+            test_epoch_RMS = sum(test_RMS) / sum(test_examples)
+            writer.add_scalar("RMS/test",test_epoch_RMS,epoch)
+            test_epoch_all_RMS = sum(test_all_RMS) / sum(test_all_examples)
+            writer.add_scalar("RMS/test",test_epoch_all_RMS,epoch)
+        
+        accelerator.print(f"{epoch=}: {train_epoch_loss=} {test_epoch_loss=}")
 
         # Save checkpoints 
         must_save = (config.trainer.save_every is not None and epoch%config.trainer.save_every == 0) or epoch in config.trainer.save_epochs
@@ -205,10 +300,29 @@ def main(args):
             if not os.path.exists(save_to_path):
                 os.makedirs(save_to_path)
             accelerator.print(f"Saving checkpoint at epoch {epoch} to {save_to_path}")
-            torch.save(model.state_dict(), save_to_path)
-            torch.save(model.encoder.state_dict(), os.path.join(save_to_path,"encoder.bin"))
-            torch.save(model.decoder.state_dict(), os.path.join(save_to_path,"decoder.bin"))
-            torch.save(config, os.path.join(save_to_path,"config"))
+            torch.save(model.encoder.state_dict(), os.path.join(save_to_path,"encoder.pth"))
+            torch.save(model.decoder.state_dict(), os.path.join(save_to_path,"decoder.pth"))
+            torch.save(dict(config), os.path.join(save_to_path,"config.pth"))
+            if config.eval.save_data:
+                torch.save({
+                    "epoch": epoch, 
+                    "train": {
+                        "loss": train_loss,
+                        "examples": train_examples,
+                        "features": train_features,
+                        "features_mask": train_features_mask,
+                        "preds": train_preds,
+                        "preds_mask": train_preds_mask
+                    },
+                    "test": { 
+                        "loss": test_loss,
+                        "examples": test_examples,
+                        "features": test_features,
+                        "features_mask": test_features_mask,
+                        "preds": test_preds,
+                        "preds_mask": test_preds_mask
+                    },
+                }, os.path.join(save_to_path, "data.pth"))
 
         accelerator.wait_for_everyone()
         
@@ -216,9 +330,9 @@ def main(args):
     writer.close()
 
     # Save pretrained model
-    torch.save(model.encoder.state_dict(), os.path.join(pt_dir,"encoder.bin"))
-    torch.save(model.decoder.state_dict(), os.path.join(pt_dir,"decoder.bin"))
-    torch.save(config, os.path.join(pt_dir,"config.bin"))
+    torch.save(model.encoder.state_dict(), os.path.join(pt_dir,"encoder.pth"))
+    torch.save(model.decoder.state_dict(), os.path.join(pt_dir,"decoder.pth"))
+    torch.save(dict(config), os.path.join(pt_dir,"config.pth"))
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()

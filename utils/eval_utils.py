@@ -52,11 +52,7 @@ def format_ctc(pred, vocab, blank_id):
 
 """ Get RMS between predicted rates and smoothed spiking data
 """
-def smoothed_RMS(preds, features, targets_mask, width, use_lograte):
-    
-    # Exponentiate to get actual firing rates from log-rates
-    if use_lograte:
-        preds = torch.exp(preds)
+def smoothed_RMS(preds, features, targets_mask, width):
     
     # Create targets by averaging spike counts
     kernel =  torch.ones(width).view(1,1,-1)
@@ -68,4 +64,4 @@ def smoothed_RMS(preds, features, targets_mask, width, use_lograte):
 
     mse = F.mse_loss(preds, targets, reduction="none")
     
-    return (mse * targets_mask).sum(), mse.sum()
+    return (mse * targets_mask).sum().detach().item(), mse.sum().detach().item()

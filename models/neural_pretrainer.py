@@ -76,13 +76,13 @@ class NeuralPretrainer(nn.Module):
         # Transform neural embeddings into rates/logits
         outputs = self.decoder(x)
 
-        
         # Compute the loss over unmasked outputs
         if self.loss_type == "poisson":
             loss = self.loss(outputs, targets) * targets_mask
-            n_examples = targets_mask.sum()
+            n_examples = targets_mask.sum().item()
         elif self.loss_type == "ctc":
-            loss = self.loss(outputs.transpose(0,1), targets, features_len, targets_len)
+            targets_cat = torch.cat([targets[i][:targets_len[i]] for i in range(len(targets))], 1)
+            loss = self.loss(outputs.transpose(0,1), targets_cat, features_len, targets_len)
             n_examples = len(features)
 
         # Reduce loss

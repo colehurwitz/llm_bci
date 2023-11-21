@@ -62,11 +62,11 @@ def main(args):
     model.decoder.load_state_dict(torch.load(os.path.join(model_dir,"decoder.bin")))
 
     eval_loss = 0.
+    eval_errors = 0.
     eval_RMS = 0.
     eval_mask_RMS = 0.
     eval_examples = 0
     eval_mask_examples = 0
-    eval_errors = 0.
     eval_phonemes = 0
 
     for step, (batch, phonograms, sentences) in enumerate(tqdm(eval_dataloader)):
@@ -96,8 +96,7 @@ def main(args):
             mask_RMS, RMS = smoothed_RMS(preds, features, targets_mask, config.smoothing, config.neural_pretrainer.use_lograte)
             eval_RMS += RMS
             eval_mask_RMS += mask_RMS
-            eval_examples += features.nelement()
-            eval_mask_examples += targets_mask.sum()
+            eval_all_examples += targets_mask.sum()
         
         
 

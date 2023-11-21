@@ -59,7 +59,7 @@ def apply_rotary_pos_emb(q, k, pos_ids, cos, sin, unsqueeze_dim=1):
 # Mask features
 class Masker(nn.Module):
 
-    def __init__(self, config: DictConfig):
+    def __init__(self, embed_mode, config: DictConfig):
         super().__init__()
 
         self.mode = config.mode
@@ -68,6 +68,7 @@ class Masker(nn.Module):
         self.random_ratio = config.random_ratio
         self.expand_prob = config.expand_prob
         self.max_timespan = config.max_timespan
+        self.embed_mode = embed_mode
 
     def forward(
         self, 
@@ -108,9 +109,16 @@ class Masker(nn.Module):
         zero_idx = torch.bernoulli(torch.full(features.shape, self.zero_ratio)).to(features.device).bool() & mask
         features[zero_idx] = 0
         random_idx = torch.bernoulli(torch.full(features.shape, self.random_ratio)).to(features.device).bool() & mask & ~zero_idx
-        random_spikes = (features.max() * torch.rand(features.shape, device=features.device) ).to(features.dtype)
+        random_spikes = (features.max() * torch.rand(features.shape, device=features.device) )
+        if self.embed_mode == "embed":
+            random_spikes = random_spikes.to(torch.int64)
+        elif self.embed_mode == "identity":
+            random_spikes = random_spikes.round()
+        else:
+            random_spikes = random_spikes.float()
+
         features[random_idx] = random_spikes[random_idx]
-        
+
         return features, mask.to(torch.int64)
 
     @staticmethod
@@ -267,12 +275,12 @@ class NeuralEmbeddingLayer(nn.Module):
 # MLP
 class NeuralMLP(nn.Module):
 
-    def __init__(self, size_in, size_out, act, use_bias, dropout):
+    def __init__(self, hidden_size, inter_size, act, use_bias, dropout):
         super().__init__()
 
-        self.up_proj    = nn.Linear(size_in, 4 * size_in, bias=use_bias)
+        self.up_proj    = nn.Linear(hidden_size, inter_size, bias=use_bias)
         self.act        = ACT2FN[act]
-        self.down_proj  = nn.Linear(4 * size_in, size_out, bias=use_bias)
+        self.down_proj  = nn.Linear(inter_size, hidden_size, bias=use_bias)
         self.dropout = nn.Dropout(dropout)
 
     def forward(self, x):
@@ -327,8 +335,9 @@ class NeuralAttention(nn.Module):
         B, F, _  = x.size()     # batch size and fea len
 
         # Create batched bool attention mask 
+        assert attn_mask.max() == 1 and attn_mask.min() == 0, ["assertion", attn_mask.max(), attn_mask.min()]
         attn_mask = attn_mask.unsqueeze(1).expand(B,self.n_heads,F,F).bool()            # (B,n_heads,F,F)
-
+        
         # Compute query, key, value for attention
         q = self.query(x).view(B, F, self.n_heads, self.head_size).transpose(1, 2)      #(B,n_heads,F,head_size)
         k = self.key(x).view(B, F, self.n_heads, self.head_size).transpose(1, 2)        #(B,n_heads,F,head_size)
@@ -359,10 +368,10 @@ class NeuralEncoderLayer(nn.Module):
         self.use_rope = config.use_rope
 
         # Encoder block
-        self.ln1 = ScaleNorm(hidden_size ** 0.5) if config.use_scalenorm else nn.LayerNorm(hidden_size) 
+        self.ln1 = ScaleNorm(hidden_size ** 0.5) if config.use_scalenorm else nn.LayerNorm(hidden_size, bias=config.norm_bias) 
         self.attn = NeuralAttention(idx, hidden_size, config.n_heads, config.attention_bias, config.dropout, config.use_rope, config.rope_theta)
-        self.ln2 = ScaleNorm(hidden_size ** 0.5) if config.use_scalenorm else nn.LayerNorm(hidden_size) 
-        self.mlp = NeuralMLP(hidden_size, hidden_size, config.act, config.mlp_bias, config.dropout)
+        self.ln2 = ScaleNorm(hidden_size ** 0.5) if config.use_scalenorm else nn.LayerNorm(hidden_size, bias=config.norm_bias) 
+        self.mlp = NeuralMLP(hidden_size, config.inter_size, config.act, config.mlp_bias, config.dropout)
 
         if config.fixup_init:
             self.fixup_initialization(config.n_layers)
@@ -439,10 +448,11 @@ class NeuralEncoder(nn.Module):
         self.config = config
         self.hidden_size = config.embedder.mult * config.embedder.n_channels
         self.int_features = config.embedder.mode == "embed"
+
         self.n_layers = config.transformer.n_layers
 
         # Masker
-        self.masker = Masker(config.masker)
+        self.masker = Masker(config.embedder.mode, config.masker)
 
         # Context span mask
         context_mask = create_context_mask(config.context.forward, config.context.backward, config.embedder.max_F)
@@ -491,7 +501,7 @@ class NeuralEncoder(nn.Module):
         # Prepare 
         context_mask = self.context_mask[:F,:F].to(x.device).unsqueeze(0).expand(B,F,F)
         features_mask = features_mask.unsqueeze(1).expand(B,F,F)
-        self_mask = torch.eye(F).to(x.device, torch.int64) # hack so that even padded features attend to themselves and avoid attention issues
+        self_mask = torch.eye(F).to(x.device, torch.int64).expand(B,F,F) # hack so that even padded features attend to themselves and avoid attention issues
         attn_mask = self_mask | (context_mask & features_mask)
         
         

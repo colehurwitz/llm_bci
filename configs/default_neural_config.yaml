@@ -1,11 +1,11 @@
 # Mask features
 masker:
   mode: timestep      # full to zero out randomly in the featue matrix. timestep to zero out randomly full timesteps. neuron to zero out full neurons
-  ratio: 0.5          # ratio of data to predict
+  ratio: 0.25         # ratio of data to predict
   zero_ratio: 0.8     # of the data to predict, ratio of zeroed out
   random_ratio: 0.6   # of the not zeroed, ratio of randomly replaced
-  expand_prob: 0.0  # probability of expanding the mask 
-  max_timespan: 1     # max span of mask if expanded
+  expand_prob: 0.0    # probability of expanding the mask 
+  max_timespan: 5     # max span of mask if expanded
 
 # Context available for each timestep
 context:
@@ -28,7 +28,7 @@ embedder:
   n_dates: 24           # number of days of experiments
   max_F: 1024           # max feature len in timesteps
 
-  mode: embed           # linear/embed/identity
+  mode: identity        # linear/embed/identity
   mult: 1               # embedding multiplier. hiddden_sizd = n_channels * mult
   adapt: false          # adapt the embedding layer for each day
   pos: true             # embed position 
@@ -45,19 +45,22 @@ embedder:
 
 # Transformer
 transformer:
-  n_layers: 6           # number of transformer layers
+  n_layers: 4           # number of transformer layers
   use_scalenorm: false  # use scalenorm  instead of layernorm
   use_rope: false       # use rotary postional encoding
   rope_theta: 10000.0   # rope angle of rotation
   
+  norm_bias: true       # learn bias in the normalizaton layers
+
   n_heads: 2            # number of attentiomn heads
-  attention_bias: false # use bias in the attention layers
+  attention_bias: true  # learn bias in the attention layers
 
   act: relu             # activiation function in mlp layers
-  mlp_bias: false       # use bias in the mlp layers
+  inter_size: 128       # intermediate dimension in the mlp layers
+  mlp_bias: true        # learn bias in the mlp layers
   
   dropout: 0.5          # dropout in transformer layers
-  fixup_init: false     # modify weight initialization
+  fixup_init: true      # modify weight initialization
 
 # Projection to factor space
 factors:  

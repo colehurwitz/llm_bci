@@ -37,7 +37,6 @@ def main(args):
     accelerator = Accelerator()
     reset_seeds(config.seed)
     accelerator.print(f"Starting run {config.savestring}")
-    accelerator.print(config)
 
     # Create saving paths
     checkpoint_dir = os.path.join(config.checkpoint_dir,config.savestring)
@@ -55,7 +54,7 @@ def main(args):
     data = torch.load(os.path.join(config.data_dir, config.data_file))
 
     # Get vocabulary info
-    vocab = data["train"]["eval"]["vocab"] if config.neural_pretrainer.loss.type == "ctc" else None
+    vocab = data["train"]["info"]["vocab"] if config.neural_pretrainer.loss.type == "ctc" else None
     blank_id = vocab.index("BLANK") if config.neural_pretrainer.loss.type == "ctc" else None
     vocab_size = len(vocab)  if config.neural_pretrainer.loss.type == "ctc" else None
 
@@ -75,7 +74,9 @@ def main(args):
 
 
     # Create encoder model for pretraining
-    config.neural_config.embedder.n_channels = train_data["model_inputs"]["features"].shape[-1]
+    config["neural_config"]["embedder"]["n_channels"] = train_data["model_inputs"]["features"][0].shape[-1]
+    accelerator.print(config)
+    
     encoder = NeuralEncoder(config.neural_config)
     model = NeuralPretrainer(encoder, config.neural_pretrainer, vocab_size, blank_id)
     if config.model_dir is not None:  
@@ -139,10 +140,14 @@ def main(args):
         train_phonemes = []
 
         # To save
+        train_sentences = []
+        train_phonograms = []
+        train_logits = []
+        train_preds = []
         train_features = []
         train_features_mask = []
-        train_preds = []
-        train_preds_mask = []
+        train_targets = []
+        train_targets_mask = []
 
         # Schedule for the probability of expanding the mask
         if config.masker_scheduler.do:
@@ -165,8 +170,9 @@ def main(args):
             optimizer.zero_grad()
 
             # Gather loss-specific train metrics
-            if config.neural_pretrainer.loss.type == "ctc" and step%100 == 0:
-                preds = torch.argmax(outputs.outputs, -1)
+            if config.neural_pretrainer.loss.type == "ctc": # and (step+1)%10:
+                logits = outputs.outputs.detach().cpu()
+                preds = torch.argmax(logits, -1)
                 preds = [" ".join(format_ctc(pred, vocab, blank_id)) for pred in preds]
                 phonograms = [" ".join(p) for p in phonograms]
                 errors, phonemes = word_error_count(preds, phonograms)
@@ -175,28 +181,35 @@ def main(args):
                 
                 preds = [pred.replace(" ","").replace("SIL"," SIL ") for pred in preds]
                 phonograms = [p.replace(" ","").replace("SIL"," SIL ") for p in phonograms]
-                # for pred, p, s in zip(preds, phonograms, sentences):
-                #     print(f"Sentence: {s} \nPhonograms: {p} \nPrediction: {pred} \n")
+                train_preds += preds
+                train_sentences += sentences
+                train_phonograms += phonograms
+                train_logits.append(logits)
                 writer.add_scalar("PER/train_iter",errors/phonemes, 1+step+(epoch-1)*len(train_dataloader))
             elif config.neural_pretrainer.loss.type == "poisson":
-                features_mask = batch["features_mask"].detach().cpu()
-                features = batch["features"].detach().cpu()
+
                 preds = outputs.outputs.detach().cpu()
-                targets_mask = outputs.targets_mask.detach().cpu()
                 if config.neural_pretrainer.use_lograte:
                     preds = torch.exp(preds)
+
+                features = batch["features"].detach().cpu()
+                features_mask = batch["features_mask"].detach().cpu()
+                targets = batch["targets"].detach().cpu()
+                targets_mask = outputs.targets_mask.detach().cpu()
+                
                 RMS, all_RMS = smoothed_RMS(preds, features, targets_mask, config.eval.smoothing)
                 train_RMS.append(RMS)
                 train_all_RMS.append(all_RMS)
                 train_all_examples.append(features.nelement())
+                train_preds.append(preds)
                 train_features.append(features)
                 train_features_mask.append(features_mask)
-                train_preds.append(preds)
-                train_preds_mask.append(targets_mask)
+                train_targets.append(targets)
+                train_targets_mask.append(targets_mask)
 
 
-                writer.add_scalar("RMS/train_iter",train_RMS[-1]/train_examples[-1], 1+step+(epoch-1)*len(train_dataloader))
-                writer.add_scalar("AllRMS/train_iter",train_all_RMS[-1]/train_all_examples[-1], 1+step+(epoch-1)*len(train_dataloader))
+                writer.add_scalar("RMS/train_iter",(train_RMS[-1]/train_examples[-1])**0.5, 1+step+(epoch-1)*len(train_dataloader))
+                writer.add_scalar("AllRMS/train_iter",(train_all_RMS[-1]/train_all_examples[-1])**0.5, 1+step+(epoch-1)*len(train_dataloader))
 
             writer.add_scalar("Loss/train_iter",train_loss[-1]/train_examples[-1], 1+step+(epoch-1)*len(train_dataloader))
             
@@ -207,10 +220,10 @@ def main(args):
             train_epoch_PER = sum(train_errors) / sum(train_phonemes)
             writer.add_scalar("PER/train",train_epoch_PER,epoch)
         elif config.neural_pretrainer.loss.type == "poisson":
-            train_epoch_RMS = sum(train_RMS) / sum(train_examples)
+            train_epoch_RMS = (sum(train_RMS) / sum(train_examples))**0.5
             writer.add_scalar("RMS/train",train_epoch_RMS,epoch)
-            train_epoch_all_RMS = sum(train_all_RMS) / sum(train_all_examples)
-            writer.add_scalar("RMS/train",train_epoch_all_RMS,epoch)
+            train_epoch_all_RMS = (sum(train_all_RMS) / sum(train_all_examples))**0.5
+            writer.add_scalar("AllRMS/train",train_epoch_all_RMS,epoch)
 
 
         print(f"Evaluation epoch {epoch}")
@@ -230,10 +243,15 @@ def main(args):
         test_phonemes = []
 
         # To save
+        test_sentences = []
+        test_phonograms = []
+        test_logits = []
+        test_preds = []
         test_features = []
         test_features_mask = []
-        test_preds = []
-        test_preds_mask = []
+        test_targets = []
+        test_targets_mask = []
+        
 
         for step, (batch, phonograms, sentences) in enumerate(tqdm(test_dataloader)):
 
@@ -248,34 +266,43 @@ def main(args):
             
             # Gather loss-specific test metrics
             if config.neural_pretrainer.loss.type == "ctc":
-                preds = torch.argmax(outputs.outputs,-1)
+                logits = outputs.outputs.detach().cpu()
+                preds = torch.argmax(logits,-1)
                 preds = [" ".join(format_ctc(pred, vocab, blank_id)) for pred in preds]
                 phonograms = [" ".join(p) for p in phonograms]
                 errors, phonemes = word_error_count(preds, phonograms)
                 test_errors.append(errors)
                 test_phonemes.append(phonemes)
-                
-                # for p, s in zip(preds, sentences):
-                #     print(f"Sentence: {s} \nPrediction: {p} \n")
+                preds = [pred.replace(" ","").replace("SIL"," SIL ") for pred in preds]
+                phonograms = [p.replace(" ","").replace("SIL"," SIL ") for p in phonograms]
+                test_preds += preds
+                test_sentences += sentences
+                test_phonograms += phonograms
+                test_logits.append(logits)
                 writer.add_scalar("PER/test_iter",errors/phonemes, 1+step+(epoch-1)*len(test_dataloader))
             elif config.neural_pretrainer.loss.type == "poisson":
-                features_mask = batch["features_mask"].detach().cpu()
-                features = batch["features"].detach().cpu()
-                targets_mask = outputs.targets_mask.detach().cpu()
+                
                 preds = outputs.outputs.detach().cpu()
                 if config.neural_pretrainer.use_lograte:
                     preds = torch.exp(preds)
-                RMS, all_RMS = smoothed_RMS(preds, features, targets_mask, config.eval.smoothing)
+
+                features = batch["features"].detach().cpu()
+                features_mask = batch["features_mask"].detach().cpu()
+                targets = batch["targets"].detach().cpu()
+                targets_mask = outputs.targets_mask.detach().cpu()
+
+                RMS, all_RMS = smoothed_RMS(preds, targets, targets_mask, config.eval.smoothing)
                 test_RMS.append(RMS)
                 test_all_RMS.append(all_RMS)
                 test_all_examples.append(features.nelement())
+                test_preds.append(preds)
                 test_features.append(features)
                 test_features_mask.append(features_mask)
-                test_preds.append(preds)
-                test_preds_mask.append(targets_mask)
+                test_targets.append(targets)
+                test_targets_mask.append(targets_mask)
 
-                writer.add_scalar("RMS/test_iter",test_RMS[-1]/test_examples[-1], 1+step+(epoch-1)*len(test_dataloader))
-                writer.add_scalar("AllRMS/test_iter",test_all_RMS[-1]/test_all_examples[-1], 1+step+(epoch-1)*len(test_dataloader))
+                writer.add_scalar("RMS/test_iter",(test_RMS[-1]/test_examples[-1])**0.5, 1+step+(epoch-1)*len(test_dataloader))
+                writer.add_scalar("AllRMS/test_iter",(test_all_RMS[-1]/test_all_examples[-1])**0.5, 1+step+(epoch-1)*len(test_dataloader))
 
             writer.add_scalar("Loss/test_iter",test_loss[-1]/test_examples[-1],1+step+(epoch-1)*len(test_dataloader))
             
@@ -286,12 +313,21 @@ def main(args):
             test_epoch_PER = sum(test_errors) / sum(test_phonemes)
             writer.add_scalar("PER/test",test_epoch_PER,epoch)
         elif config.neural_pretrainer.loss.type == "poisson":
-            test_epoch_RMS = sum(test_RMS) / sum(test_examples)
+            test_epoch_RMS = (sum(test_RMS) / sum(test_examples))**0.5
             writer.add_scalar("RMS/test",test_epoch_RMS,epoch)
-            test_epoch_all_RMS = sum(test_all_RMS) / sum(test_all_examples)
-            writer.add_scalar("RMS/test",test_epoch_all_RMS,epoch)
+            test_epoch_all_RMS = (sum(test_all_RMS) / sum(test_all_examples))**0.5
+            writer.add_scalar("AllRMS/test",test_epoch_all_RMS,epoch)
         
-        accelerator.print(f"{epoch=}: {train_epoch_loss=} {test_epoch_loss=}")
+        if config.neural_pretrainer.loss.type == "ctc":
+            print("TRAIN: ")
+            for pred, p, s in zip(train_preds[:20], train_phonograms[:20], train_sentences[:20]):
+                print(f"Sentence: {s} \nPhonograms: {p} \nPrediction: {pred} \n")
+            print("TEST: ")
+            for pred, p, s in zip(test_preds[:20], test_phonograms[:20], test_sentences[:20]):
+                print(f"Sentence: {s} \nPhonograms: {p} \nPrediction: {pred} \n")
+            accelerator.print(f"{epoch=}: {train_epoch_loss=} {test_epoch_loss=} {train_epoch_PER=} {test_epoch_PER=}")
+        elif config.neural_pretrainer.loss.type == "poisson":
+            accelerator.print(f"{epoch=}: {train_epoch_loss=} {test_epoch_loss=} {train_epoch_RMS=} {test_epoch_RMS=}")
 
         # Save checkpoints 
         must_save = (config.trainer.save_every is not None and epoch%config.trainer.save_every == 0) or epoch in config.trainer.save_epochs
@@ -304,26 +340,48 @@ def main(args):
             torch.save(model.decoder.state_dict(), os.path.join(save_to_path,"decoder.pth"))
             torch.save(dict(config), os.path.join(save_to_path,"config.pth"))
             if config.eval.save_data:
-                torch.save({
-                    "epoch": epoch, 
-                    "train": {
-                        "loss": train_loss,
-                        "examples": train_examples,
-                        "features": train_features,
-                        "features_mask": train_features_mask,
-                        "preds": train_preds,
-                        "preds_mask": train_preds_mask
-                    },
-                    "test": { 
-                        "loss": test_loss,
-                        "examples": test_examples,
-                        "features": test_features,
-                        "features_mask": test_features_mask,
-                        "preds": test_preds,
-                        "preds_mask": test_preds_mask
-                    },
-                }, os.path.join(save_to_path, "data.pth"))
+                if config.neural_pretrainer.loss.type == "poisson":
+                    torch.save({
+                        "train": {
+                            "loss": train_loss,
+                            "examples": train_examples,
+                            "preds": train_preds,
+                            "features": train_features,
+                            "features_mask": train_features_mask,
+                            "targets": train_targets,
+                            "targets_mask": train_targets_mask,
+                        },
+                        "test": { 
+                            "loss": test_loss,
+                            "examples": test_examples,
+                            "preds": test_preds,
+                            "features": test_features,
+                            "features_mask": test_features_mask,
+                            "targets": test_targets,
+                            "targets_mask": test_targets_mask,
+                        },
+                    }, os.path.join(save_to_path, "data.pth"))
+                elif config.neural_pretrainer.loss.type == "ctc":
+                    torch.save({
+                        "train": {
+                            "loss": train_loss,
+                            "examples": train_examples,
+                            "preds": train_preds,
+                            "sentences": train_sentences,
+                            "phonograms": train_phonograms,
+                            "logits": train_logits,
+                        },
+                        "test": { 
+                            "loss": test_loss,
+                            "examples": test_examples,
+                            "preds": test_preds,
+                            "sentences": test_sentences,
+                            "phonograms": test_phonograms,
+                            "logits": test_logits,
+                        },
+                    }, os.path.join(save_to_path, "data.pth"))
 
+            
         accelerator.wait_for_everyone()
         
     writer.flush()

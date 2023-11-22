@@ -72,7 +72,8 @@ class NeuralPretrainer(nn.Module):
 
         # Encode neural data
         x, targets_mask = self.encoder(features, features_mask, features_timestamp, block_idx, date_idx)
-
+        features_len = self.encoder.embedder.get_stacked_lens(features_len)
+        
         # Transform neural embeddings into rates/logits
         outputs = self.decoder(x)
 
@@ -81,8 +82,7 @@ class NeuralPretrainer(nn.Module):
             loss = self.loss(outputs, targets) * targets_mask
             n_examples = targets_mask.sum().item()
         elif self.loss_type == "ctc":
-            targets_cat = torch.cat([targets[i][:targets_len[i]] for i in range(len(targets))], 1)
-            loss = self.loss(outputs.transpose(0,1), targets_cat, features_len, targets_len)
+            loss = self.loss(outputs.transpose(0,1), targets, features_len, targets_len)
             n_examples = len(features)
 
         # Reduce loss

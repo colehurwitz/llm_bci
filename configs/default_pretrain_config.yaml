@@ -1,6 +1,6 @@
 seed: 1
 savestring: poisson-pretrain-maze 
-data_file: mc_maze_20_train.pth
+data_file: processed.pth
 
 model_dir: null  # pretrained model to load to continue pretraining, null to start from scratch
 data_dir: /n/home07/djimenezbeneto/lab/datasets/BCI/competitionData
@@ -10,17 +10,17 @@ log_dir: /n/home07/djimenezbeneto/lab/BCI/logs
 
 
 eval:
-  smoothing: 5
-  save_data: true
+  smoothing: 0
+  save_data: false
 
 masker_scheduler:
-  do: true
+  active: false
   start: 60
   end: 100
 
 trainer:
-  num_epochs: 500
-  save_epochs: [1,50,100,200,300,400,500]
+  num_epochs: 200
+  save_epochs: [1,50,150,200]
   save_every: null
   train_len: null     # null to use whole set
   test_len: null      # null to use whole set
@@ -30,7 +30,7 @@ trainer:
 optimizer:
   lr: 1.e-3
   wd: 5.e-5
-  warmup_epochs: 15
+  warmup_epochs: 0
   eps: 1.e-8
   scheduler: cosine # linear
 

@@ -15,14 +15,14 @@ from utils.config_utils import DictConfig
 def create_context_mask(context_forward, context_backward, max_F) -> torch.LongTensor: # (max_fea_len, max_fea_len)
 
         if context_forward == -1 and context_backward == -1:
-            return torch.ones(max_F, max_F)
+            return torch.ones(max_F, max_F).to(torch.int64)
 
         context_forward = context_forward if context_forward >= 0 else max_F
+        context_backward = context_backward if context_backward >= 0 else max_F
         mask = (torch.triu(torch.ones(max_F, max_F), diagonal=-context_forward).to(torch.int64)).transpose(0, 1)
         if context_backward > 0:
             back_mask = (torch.triu(torch.ones(max_F, max_F), diagonal=-context_backward).to(torch.int64))
             mask = mask & back_mask
-
         return mask
 
 # Copied from hf Llama
@@ -129,7 +129,7 @@ class Masker(nn.Module):
         
 
 # Normalize and add noise
-class NormAndNoise(nn.Module):
+class NormAndNoise(nn.Module): 
 
     def __init__(self, input_size, config):
         super().__init__()
@@ -165,20 +165,21 @@ class NormAndNoise(nn.Module):
         return features
 
 
-# Embed
+# Embed and stack
 class NeuralEmbeddingLayer(nn.Module):
 
     def __init__(self, hidden_size, config: DictConfig):
         super().__init__()
 
         self.adapt = config.adapt
-        self.bias = config.bias
+        self.bias = config.mlp_bias
         
+
         if self.adapt:
              # One embedding layer for each day
             if config.mode == "linear":
                 self.embed_spikes = nn.ModuleList([
-                    nn.Linear(config.n_channels, hidden_size, bias=config.bias) 
+                    nn.Linear(config.n_channels, config.n_channels * config.mult, bias=config.bias) 
                 for i in range(config.n_dates)])
 
             elif config.mode == "embed":
@@ -189,11 +190,11 @@ class NeuralEmbeddingLayer(nn.Module):
                     )
                 for i in range(config.n_dates)])
             else:
-                raise Exception("Embedding mode {config.mode} cannot be adaptative")
+                raise Exception(f"Embedding mode {config.mode} cannot be adaptative")
         else:
             # One common embedding layer
             if config.mode == "linear":
-                self.embed_spikes = nn.Linear(config.n_channels, hidden_size, bias=config.bias)
+                self.embed_spikes = nn.Linear(config.n_channels, config.n_channels * config.mult, bias=config.bias)
             elif config.mode == "embed":
                 self.embed_spikes = nn.Sequential(
                     nn.Embedding(config.max_spikes, config.mult),
@@ -207,11 +208,20 @@ class NeuralEmbeddingLayer(nn.Module):
         if config.mode == "embed" and config.fixup_init:
             self.fixup_initialization(config.init_range, config.spike_log_init, config.max_spikes, adapt=self.adapt)
 
+        # Stacking
+        self.stack = config.stack.active
+        if self.stack:
+            self.stack_size = config.stack.size
+            self.stack_stride = config.stack.stride
+            self.stacking = nn.Unfold(kernel_size=(config.stack.size, config.n_channels),stride=(config.stack.stride,1))
+            self.stacking_mask = nn.Unfold(kernel_size=(config.stack.size, 1),stride=(config.stack.stride,1))
+            self.stack_projection = nn.Linear(config.n_channels*config.mult*config.stack.size,hidden_size)
+
         # Activation after embedding
         self.act = ACT2FN[config.act] if config.act != "identity" else nn.Identity()
 
         # Embedding scale
-        self.scale = hidden_size ** 0.5
+        self.scale = hidden_size ** 0.5 if config.scale == None else config.scale
 
         # Embed postion
         self.pos = config.pos
@@ -224,10 +234,11 @@ class NeuralEmbeddingLayer(nn.Module):
     def forward(
             self, 
             features:           torch.FloatTensor,      # (batch_size, fea_len, n_channels)
+            features_mask:      Optional[torch.LongTensor],          # (batch_size, fea_len)
             features_timestamp: Optional[torch.LongTensor],          # (batch_size, fea_len)
             block_idx:          Optional[torch.LongTensor] = None,   # (batch_size)
             date_idx:           Optional[torch.LongTensor] = None,   # (batch_size)
-        ) -> torch.FloatTensor:                     # (batch_size, fea_len, hidden_size)
+        ) -> Tuple[torch.FloatTensor,torch.LongTensor,torch.LongTensor]:   # (batch_size, new_fea_len, hidden_size),  (batch_size, new_fea_len), (batch_size, new_fea_len)
 
         # Embed spikes
         if self.adapt:
@@ -238,12 +249,22 @@ class NeuralEmbeddingLayer(nn.Module):
         # Rescaling
         x = self.act(x) * self.scale
 
-         # Embed position
+        # Stacking
+        if self.stack:
+            x = self.stack_projection(self.stacking(x.unsqueeze(1)).transpose(1,2))
+            features_timestamp = features_timestamp[:,:x.size(1)] # keep the first positions
+            features_mask = self.stacking_mask(features_mask.unsqueeze(-1).unsqueeze(1).float()).transpose(1,2).prod(-1).to(features_mask.dtype) # unmask only features tha come from unmasked features
+
+        # Embed position
         if self.pos:
             x += self.embed_pos(features_timestamp)
 
-        return self.dropout(x)
+        return self.dropout(x), features_mask, features_timestamp
 
+
+    # Compute new lens after stacking
+    def get_stacked_lens(self, lens):
+        return lens if not self.stack else (1 + (lens - self.stack_size) / self.stack_stride).to(lens.dtype)
 
     # Initialization methods copied from NDT
     def fixup_initialization(self, init_range, spike_log_init, max_spikes, adapt):
@@ -359,7 +380,7 @@ class NeuralAttention(nn.Module):
 # Encoder layer: bidirectional self-attention + mlp
 class NeuralEncoderLayer(nn.Module):
     
-    def __init__(self, idx, hidden_size, config: DictConfig):
+    def __init__(self, idx, config: DictConfig):
         super().__init__()
 
         self.idx = idx
@@ -368,10 +389,10 @@ class NeuralEncoderLayer(nn.Module):
         self.use_rope = config.use_rope
 
         # Encoder block
-        self.ln1 = ScaleNorm(hidden_size ** 0.5) if config.use_scalenorm else nn.LayerNorm(hidden_size, bias=config.norm_bias) 
-        self.attn = NeuralAttention(idx, hidden_size, config.n_heads, config.attention_bias, config.dropout, config.use_rope, config.rope_theta)
-        self.ln2 = ScaleNorm(hidden_size ** 0.5) if config.use_scalenorm else nn.LayerNorm(hidden_size, bias=config.norm_bias) 
-        self.mlp = NeuralMLP(hidden_size, config.inter_size, config.act, config.mlp_bias, config.dropout)
+        self.ln1 = ScaleNorm(config.hidden_size ** 0.5) if config.use_scalenorm else nn.LayerNorm(config.hidden_size, bias=config.norm_bias) 
+        self.attn = NeuralAttention(idx, config.hidden_size, config.n_heads, config.attention_bias, config.dropout, config.use_rope, config.rope_theta)
+        self.ln2 = ScaleNorm(config.hidden_size ** 0.5) if config.use_scalenorm else nn.LayerNorm(config.hidden_size, bias=config.norm_bias) 
+        self.mlp = NeuralMLP(config.hidden_size, config.inter_size, config.act, config.mlp_bias, config.dropout)
 
         if config.fixup_init:
             self.fixup_initialization(config.n_layers)
@@ -446,13 +467,15 @@ class NeuralEncoder(nn.Module):
         super().__init__()
 
         self.config = config
-        self.hidden_size = config.embedder.mult * config.embedder.n_channels
+        
         self.int_features = config.embedder.mode == "embed"
-
+        self.hidden_size = config.transformer.hidden_size
         self.n_layers = config.transformer.n_layers
 
         # Masker
-        self.masker = Masker(config.embedder.mode, config.masker)
+        self.mask = config.masker.active
+        if self.mask:
+            self.masker = Masker(config.embedder.mode, config.masker)
 
         # Context span mask
         context_mask = create_context_mask(config.context.forward, config.context.backward, config.embedder.max_F)
@@ -465,7 +488,7 @@ class NeuralEncoder(nn.Module):
         self.embedder = NeuralEmbeddingLayer(self.hidden_size, config.embedder)
 
         # Transformer
-        self.layers = nn.ModuleList([NeuralEncoderLayer(idx, self.hidden_size, config.transformer) for idx in range(self.n_layers)])
+        self.layers = nn.ModuleList([NeuralEncoderLayer(idx, config.transformer) for idx in range(self.n_layers)])
         self.out_norm = ScaleNorm(self.hidden_size ** 0.5) if config.transformer.use_scalenorm else nn.LayerNorm(self.hidden_size) 
        
         # Out projection
@@ -482,28 +505,31 @@ class NeuralEncoder(nn.Module):
             date_idx:           Optional[torch.LongTensor] = None,   # (batch_size)
         ) -> torch.FloatTensor:                     # (batch_size, fea_len, hidden_size)
         
-        B, F, N = features.size() # batch size, seq len, n_channels
+        B, F, N = features.size() # batch size, fea len, n_channels
         
         if self.int_features:
             features = features.to(torch.int64)
         
-        # Mask neural data
-        features, targets_mask = self.masker(features)
-        targets_mask = targets_mask & features_mask.unsqueeze(-1).expand(B,F,N)
-
         # Normalize across channels and add noise
         features = self.norm_and_noise(features)
 
-        # Embed neural data
-        x = self.embedder(features, features_timestamp, block_idx, date_idx)
+        # Mask neural data
+        if self.mask:
+            features, targets_mask = self.masker(features)
+            targets_mask = targets_mask & features_mask.unsqueeze(-1).expand(B,F,N)
+        else:
+            targets_mask = None
 
-        
+        # Embed neural data
+        x, features_mask, features_timestamp = self.embedder(features, features_mask, features_timestamp, block_idx, date_idx)
+
+        _, F, _ = x.size() # feature len may have changed after stacking
+
         # Prepare 
         context_mask = self.context_mask[:F,:F].to(x.device).unsqueeze(0).expand(B,F,F)
         features_mask = features_mask.unsqueeze(1).expand(B,F,F)
         self_mask = torch.eye(F).to(x.device, torch.int64).expand(B,F,F) # hack so that even padded features attend to themselves and avoid attention issues
         attn_mask = self_mask | (context_mask & features_mask)
-        
         
         # Forward transformer
         for idx, layer in enumerate(self.layers):

@@ -6,7 +6,7 @@ import torch.nn.functional as F
 from seq_alignment import global_similarity
 
 
-""" Compute word edit distancefrom source to target
+""" Compute word edit distance from source to target
 """
 def word_edit_distance(source,target):
 
@@ -44,10 +44,10 @@ def word_error_count(preds, targets):
 def format_ctc(pred, vocab, blank_id):
     phonogram = []
     last = -1
-    for i in pred:
-        if i != last and i != blank_id:
-            phonogram.append(vocab[i])
-            last = deepcopy(i)
+    for idx in pred:
+        if idx != last and id != blank_id:
+            phonogram.append(vocab[idx])
+            last = deepcopy(idx)
     return phonogram
 
 """ Get RMS between predicted rates and smoothed spiking data

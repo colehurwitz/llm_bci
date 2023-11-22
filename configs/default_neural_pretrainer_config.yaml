@@ -3,6 +3,6 @@
 use_lograte: true     # true to treat the model predicitons as logrates (thus exponentiate before PoissonNLL)
 
 loss: 
-  type: poisson       # ctc or poisson
+  type: ctc       # ctc or poisson
   reduction: sum  # sum, mean or none
   

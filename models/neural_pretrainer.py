@@ -51,7 +51,7 @@ class NeuralPretrainer(nn.Module):
         if config.loss.type == "poisson":
             self.loss = nn.PoissonNLLLoss(reduction="none", log_input=config.use_lograte)
         elif config.loss.type == "ctc":
-            self.loss = nn.CTCLoss(reduction="none", blank=blank_id)
+            self.loss = nn.CTCLoss(reduction="none", blank=blank_id, zero_infinity=config.zero_infinity)
         
 
 

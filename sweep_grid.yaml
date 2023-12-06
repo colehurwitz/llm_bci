@@ -1,0 +1,50 @@
+name: test_sweep
+
+command:
+  - python
+  - ${program}
+  - "-c"
+  - sweep_base_config.yaml
+
+metric:
+  goal: minimize
+  name: test_epoch_PER
+
+program: pretrain.py
+
+method: grid
+
+early_terminate:
+  type: hyperband
+  min_iter: 20
+  eta: 1
+
+parameters:
+  trainer.num_epochs:
+    value: 60
+  trainer.train_batch_size:
+    value: 64
+  optimizer.lr:
+    values: [0.006, 0.003, 0.001, 0.0007, 0.0003]
+  optimizer.warmup_epochs:
+    values: [0, 16]
+  neural_encoder.context.forward:
+    value: 0
+  neural_encoder.context.backward:
+    value: -1
+  neural_encoder.norm_and_noise.active:
+    value: False
+  neural_encoder.embedder.mult:
+    values: [1,2]
+  neural_encoder.embedder.dropout:
+    value: 0.2
+  neural_encoder.transformer.n_layers:
+    values: [5, 7, 11]
+  neural_encoder.transformer.hidden_size:
+    value: 1024
+  neural_encoder.transformer.inter_size:
+    values: [1024, 2048]
+  neural_encoder.transformer.dropout:
+    value: 0.4
+  neural_encoder.factors.dropout:
+    value: 0.0

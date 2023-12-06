@@ -39,18 +39,14 @@ CHANGES
 
 
 TO DO
--kernel to extract features / some sort of stacking
--higher lr
--CHECK CTC LOSS CUDNN REQURIEMENTS
--phoneme error rate in pretrain
+- DON'T COUNT SIL FOR THE PHONEME ERROR
 -subwords instead of phonemes
-- padding mode for gaussian smoothing
+-Using higher lr for encoder and lower for decoder?
 -disentangle relevant from irrelevant
 -check weight initialization
-- embedding gating and context
+-embedding gating and context
 -visualize neural embeddings
 -which part of the model is under LORA ?
--Using higher lr for encoder and lower for decoder?
 -context span also for llama
 -data augmentation by choosing subset of channels?
 -penalization proportional to the frequency of the token

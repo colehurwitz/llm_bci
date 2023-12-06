@@ -1,7 +1,7 @@
 # My files
 .gitignore
 *.sh
-sc_paths.yaml
+*paths.yaml
 logs
 bash_logs
 checkpoints

@@ -1,13 +1,14 @@
 seed: 1
-savestring: poisson-pretrain-maze 
-data_file: processed.pth
+savestring: default_savestring
+data_file: default_data
+log_to_wandb: false
+wandb_project: default_project
 
-model_dir: null  # pretrained model to load to continue pretraining, null to start from scratch
-data_dir: /n/home07/djimenezbeneto/lab/datasets/BCI/competitionData
-checkpoint_dir: /n/home07/djimenezbeneto/lab/BCI/checkpoints
-pt_dir: /n/home07/djimenezbeneto/lab/BCI/pt_models
-log_dir: /n/home07/djimenezbeneto/lab/BCI/logs
+dirs: include:configs/default_dirs.yaml
 
+load_pretrained: false
+
+day_specific: true
 
 eval:
   smoothing: 0
@@ -19,12 +20,12 @@ masker_scheduler:
   end: 100
 
 trainer:
-  num_epochs: 200
-  save_epochs: [1,50,150,200]
+  num_epochs: 100
+  save_epochs: []
   save_every: null
   train_len: null     # null to use whole set
   test_len: null      # null to use whole set
-  test_batch_size: 64
+  test_batch_size: 128
   train_batch_size: 64
 
 optimizer:
@@ -34,5 +35,5 @@ optimizer:
   eps: 1.e-8
   scheduler: cosine # linear
 
-neural_config: include:configs/default_neural_config.yaml
+neural_encoder: include:configs/default_neural_encoder_config.yaml
 neural_pretrainer: include:configs/default_neural_pretrainer_config.yaml

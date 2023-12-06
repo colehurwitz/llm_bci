@@ -8,7 +8,6 @@ from functools import partial
 import string
 
 import scipy
-from scipy.ndimage import gaussian_filter1d
 import torch
 import numpy as np
 
@@ -49,7 +48,7 @@ def get_split_dict(split_dir, config):
 
     for file in tqdm(all_files):
         data = scipy.io.loadmat(file)
-        x_i = data[config.feature][0]
+        x_i = np.array([np.concatenate([data[config.feature][0,i][:,:128],data["spikePow"][0,i][:,:128]],axis=1) for i in range(len(data[config.feature][0])) ],dtype=np.ndarray)  # 128 neurons correspond to area 6v
         y_i = data["sentenceText"]
         b_i = data["blockIdx"]
         d_i = [tuple(file.split("/")[-1].split(".")[1:4])] * len(b_i)
@@ -63,10 +62,6 @@ def get_split_dict(split_dir, config):
                 sd = np.std(np.concatenate(x_i[idx], axis=0), axis=0)
                 for i in idx:
                     x_i[i] = (x_i[i] - mu) / sd 
-        
-        if config.gauss_smooth:
-            for i in range(len(x_i)):
-                x_i[i] = gaussian_filter1d(x_i[i], sigma=config.sd, axis=0, mode=config.padding_mode) 
 
         x.append(x_i)
         y.append(y_i)

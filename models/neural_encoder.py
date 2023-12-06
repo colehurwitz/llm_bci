@@ -5,6 +5,7 @@ from functools import partial
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from scipy import signal
 
 from transformers.activations import ACT2FN
 ACT2FN["softsign"] = nn.Softsign
@@ -27,10 +28,10 @@ def create_context_mask(context_forward, context_backward, max_F) -> torch.LongT
 
 # Copied from hf Llama
 # Precompute cos and sin for RoPE
-def get_cos_sin(dim, max_latent_positions, base=10000, dtype=torch.get_default_dtype(), device=None):
+def get_cos_sin(dim, max_F, base=10000, dtype=torch.get_default_dtype(), device=None):
 
         inv_freq = 1.0 / (base ** (torch.arange(0, dim, 2).float().to(device) / dim))
-        t = torch.arange(max_latent_positions, device=device, dtype=inv_freq.dtype)
+        t = torch.arange(max_F, device=device, dtype=inv_freq.dtype)
         freqs = torch.einsum("i,j->ij", t, inv_freq)
 
         emb = torch.cat((freqs, freqs), dim=-1)
@@ -133,7 +134,9 @@ class NormAndNoise(nn.Module):
 
     def __init__(self, input_size, config):
         super().__init__()
-        self.normalize = config.normalize
+        self.active = config.active
+
+        self.normalize = config.norm is not None
         if self.normalize:
             if config.norm == "layernorm":
                 self.norm = nn.LayerNorm(input_size)
@@ -146,9 +149,22 @@ class NormAndNoise(nn.Module):
         self.eps = config.eps
         self.white_noise_sd = config.white_noise_sd
         self.constant_offset_sd = config.constant_offset_sd
+        self.smooth = config.smooth_sd is not None
+        if self.smooth:
+            kernel = torch.from_numpy(signal.gaussian(1 +config.smooth_sd*6, config.smooth_sd))
+            kernel = kernel / kernel.sum()
+            self.register_buffer("kernel", kernel, persistent=False)
+    
 
     def forward(self, features):
+        if not self.active:
+            return features
+            
         B, T, N = features.size()
+
+        if self.smooth:
+            features = F.conv1d(features.transpose(-1,-2),self.kernel.unsqueeze(0).unsqueeze(0).expand(N,1,self.kernel.size(0)).to(features.dtype), padding="same", groups=N).transpose(-1,-2)
+        
 
         if self.normalize:  
             if self.norm is None:
@@ -162,6 +178,7 @@ class NormAndNoise(nn.Module):
         if self.constant_offset_sd is not None:
             features += self.constant_offset_sd*torch.randn(B,1,N, dtype=features.dtype, device=features.device)
 
+        
         return features
 
 
@@ -172,14 +189,14 @@ class NeuralEmbeddingLayer(nn.Module):
         super().__init__()
 
         self.adapt = config.adapt
-        self.bias = config.mlp_bias
-        
+        self.bias = config.bias
+        self.input_dim = config.n_channels*config.mult
 
         if self.adapt:
              # One embedding layer for each day
             if config.mode == "linear":
                 self.embed_spikes = nn.ModuleList([
-                    nn.Linear(config.n_channels, config.n_channels * config.mult, bias=config.bias) 
+                    nn.Linear(config.n_channels, self.input_dim, bias=config.bias) 
                 for i in range(config.n_dates)])
 
             elif config.mode == "embed":
@@ -194,7 +211,7 @@ class NeuralEmbeddingLayer(nn.Module):
         else:
             # One common embedding layer
             if config.mode == "linear":
-                self.embed_spikes = nn.Linear(config.n_channels, config.n_channels * config.mult, bias=config.bias)
+                self.embed_spikes = nn.Linear(config.n_channels, self.input_dim, bias=config.bias)
             elif config.mode == "embed":
                 self.embed_spikes = nn.Sequential(
                     nn.Embedding(config.max_spikes, config.mult),
@@ -213,9 +230,9 @@ class NeuralEmbeddingLayer(nn.Module):
         if self.stack:
             self.stack_size = config.stack.size
             self.stack_stride = config.stack.stride
-            self.stacking = nn.Unfold(kernel_size=(config.stack.size, config.n_channels),stride=(config.stack.stride,1))
+            self.stacking = nn.Unfold(kernel_size=(config.stack.size, self.input_dim),stride=(config.stack.stride,1))
             self.stacking_mask = nn.Unfold(kernel_size=(config.stack.size, 1),stride=(config.stack.stride,1))
-            self.stack_projection = nn.Linear(config.n_channels*config.mult*config.stack.size,hidden_size)
+            self.stack_projection = nn.Linear(self.input_dim*config.stack.size,hidden_size)
 
         # Activation after embedding
         self.act = ACT2FN[config.act] if config.act != "identity" else nn.Identity()
@@ -314,7 +331,7 @@ class NeuralMLP(nn.Module):
 # Attention module.
 class NeuralAttention(nn.Module):
 
-    def __init__(self, idx, hidden_size, n_heads, use_bias, dropout, use_rope=False, base=10000.):
+    def __init__(self, idx, hidden_size, n_heads, use_bias, dropout, use_rope=False, base=10000., max_F=1024):
         super().__init__()
         
         self.idx = idx
@@ -342,7 +359,7 @@ class NeuralAttention(nn.Module):
 
         # RoPE parameters
         if use_rope:
-            cos, sin = get_cos_sin(self.head_size, max_n_latents, base=base, dtype=self.query.weight.dtype, device=self.query.weight.device)
+            cos, sin = get_cos_sin(self.head_size, max_F, base=base, dtype=self.query.weight.dtype, device=self.query.weight.device)
             self.register_buffer("cos", cos, persistent=False)
             self.register_buffer("sin", sin, persistent=False)
 
@@ -353,26 +370,26 @@ class NeuralAttention(nn.Module):
         timestamp:  Optional[torch.LongTensor] = None,      # (batch_size, fea_len)
     ) -> torch.FloatTensor:                                 # (batch_size, fea_len, hidden_size)
 
-        B, F, _  = x.size()     # batch size and fea len
+        B, T, _  = x.size()     # batch size and fea len
 
         # Create batched bool attention mask 
         assert attn_mask.max() == 1 and attn_mask.min() == 0, ["assertion", attn_mask.max(), attn_mask.min()]
-        attn_mask = attn_mask.unsqueeze(1).expand(B,self.n_heads,F,F).bool()            # (B,n_heads,F,F)
+        attn_mask = attn_mask.unsqueeze(1).expand(B,self.n_heads,T,T).bool()            # (B,n_heads,T,T)
         
         # Compute query, key, value for attention
-        q = self.query(x).view(B, F, self.n_heads, self.head_size).transpose(1, 2)      #(B,n_heads,F,head_size)
-        k = self.key(x).view(B, F, self.n_heads, self.head_size).transpose(1, 2)        #(B,n_heads,F,head_size)
-        v = self.value(x).view(B, F, self.n_heads, self.head_size).transpose(1, 2)      #(B,n_heads,F,head_size)
+        q = self.query(x).view(B, T, self.n_heads, self.head_size).transpose(1, 2)      #(B,n_heads,T,head_size)
+        k = self.key(x).view(B, T, self.n_heads, self.head_size).transpose(1, 2)        #(B,n_heads,T,head_size)
+        v = self.value(x).view(B, T, self.n_heads, self.head_size).transpose(1, 2)      #(B,n_heads,T,head_size)
 
         # Apply rotations to encode relative positions
         if self.use_rope:
-            q, k = apply_rotary_pos_emb(q, k, timestamp, self.cos, self.sin, 1)  # (B,n_heads,F,head_size)
+            q, k = apply_rotary_pos_emb(q, k, timestamp, self.cos, self.sin, 1)  # (B,n_heads,T,head_size)
 
         # Compute attention efficiently
-        out = self.flash_attention(q, k, v, attn_mask=attn_mask)                 # (B,n_heads,F,head_size)
-        out = out.transpose(1, 2).contiguous().view(B,F, self.hidden_size)       # (B, F, hidden_size)
+        out = self.flash_attention(q, k, v, attn_mask=attn_mask)                 # (B,n_heads,T,head_size)
+        out = out.transpose(1, 2).contiguous().view(B,T, self.hidden_size)       # (B, T, hidden_size)
 
-        return self.out_proj(self.dropout(out)) # (B, F, hidden_size)
+        return self.out_proj(self.dropout(out)) # (B, T, hidden_size)
 
     
     
@@ -380,7 +397,7 @@ class NeuralAttention(nn.Module):
 # Encoder layer: bidirectional self-attention + mlp
 class NeuralEncoderLayer(nn.Module):
     
-    def __init__(self, idx, config: DictConfig):
+    def __init__(self, idx, max_F, config: DictConfig):
         super().__init__()
 
         self.idx = idx
@@ -390,7 +407,7 @@ class NeuralEncoderLayer(nn.Module):
 
         # Encoder block
         self.ln1 = ScaleNorm(config.hidden_size ** 0.5) if config.use_scalenorm else nn.LayerNorm(config.hidden_size, bias=config.norm_bias) 
-        self.attn = NeuralAttention(idx, config.hidden_size, config.n_heads, config.attention_bias, config.dropout, config.use_rope, config.rope_theta)
+        self.attn = NeuralAttention(idx, config.hidden_size, config.n_heads, config.attention_bias, config.dropout, config.use_rope, config.rope_theta, max_F)
         self.ln2 = ScaleNorm(config.hidden_size ** 0.5) if config.use_scalenorm else nn.LayerNorm(config.hidden_size, bias=config.norm_bias) 
         self.mlp = NeuralMLP(config.hidden_size, config.inter_size, config.act, config.mlp_bias, config.dropout)
 
@@ -436,12 +453,12 @@ class NeuralFactorsProjection(nn.Module):
         
         super().__init__()
         
-        self.out_size = config.size if config.project_to_factors else hidden_size
-        # self.out_space = "factors" if config.project_to_factors else "hidden"
+        self.out_size = config.size if config.active else hidden_size
+        # self.out_space = "factors" if config.active else "hidden"
         
         self.dropout = nn.Dropout(config.dropout)
 
-        if config.project_to_factors:
+        if config.active:
             self.proj = nn.Sequential(
                 nn.Linear(hidden_size, config.size, config.bias),
                 ACT2FN[config.act]
@@ -488,7 +505,7 @@ class NeuralEncoder(nn.Module):
         self.embedder = NeuralEmbeddingLayer(self.hidden_size, config.embedder)
 
         # Transformer
-        self.layers = nn.ModuleList([NeuralEncoderLayer(idx, config.transformer) for idx in range(self.n_layers)])
+        self.layers = nn.ModuleList([NeuralEncoderLayer(idx, config.embedder.max_F, config.transformer) for idx in range(self.n_layers)])
         self.out_norm = ScaleNorm(self.hidden_size ** 0.5) if config.transformer.use_scalenorm else nn.LayerNorm(self.hidden_size) 
        
         # Out projection
@@ -505,7 +522,7 @@ class NeuralEncoder(nn.Module):
             date_idx:           Optional[torch.LongTensor] = None,   # (batch_size)
         ) -> torch.FloatTensor:                     # (batch_size, fea_len, hidden_size)
         
-        B, F, N = features.size() # batch size, fea len, n_channels
+        B, T, N = features.size() # batch size, fea len, n_channels
         
         if self.int_features:
             features = features.to(torch.int64)
@@ -516,19 +533,19 @@ class NeuralEncoder(nn.Module):
         # Mask neural data
         if self.mask:
             features, targets_mask = self.masker(features)
-            targets_mask = targets_mask & features_mask.unsqueeze(-1).expand(B,F,N)
+            targets_mask = targets_mask & features_mask.unsqueeze(-1).expand(B,T,N)
         else:
             targets_mask = None
 
         # Embed neural data
         x, features_mask, features_timestamp = self.embedder(features, features_mask, features_timestamp, block_idx, date_idx)
 
-        _, F, _ = x.size() # feature len may have changed after stacking
+        _, T, _ = x.size() # feature len may have changed after stacking
 
         # Prepare 
-        context_mask = self.context_mask[:F,:F].to(x.device).unsqueeze(0).expand(B,F,F)
-        features_mask = features_mask.unsqueeze(1).expand(B,F,F)
-        self_mask = torch.eye(F).to(x.device, torch.int64).expand(B,F,F) # hack so that even padded features attend to themselves and avoid attention issues
+        context_mask = self.context_mask[:T,:T].to(x.device).unsqueeze(0).expand(B,T,T)
+        features_mask = features_mask.unsqueeze(1).expand(B,T,T)
+        self_mask = torch.eye(T).to(x.device, torch.int64).expand(B,T,T) # hack so that even padded features attend to themselves and avoid attention issues
         attn_mask = self_mask | (context_mask & features_mask)
         
         # Forward transformer

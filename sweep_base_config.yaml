@@ -1,0 +1,45 @@
+savestring: default_savestring
+log_to_wandb: false
+wandb_project: testwandb
+data_file: processed-zscore.pth
+
+dirs: include:sc_dirs.yaml
+
+trainer:
+  num_epochs: 50
+  save_epochs: []
+  train_batch_size: 64
+
+optimizer:
+  lr: 0.001
+  warmup_epochs: 0
+  
+neural_encoder:
+  context:
+    forward: 0
+    backward: -1
+  norm_and_noise:
+    active: true
+    norm: null
+    white_noise_sd: 1.0
+    constant_offset_sd: 0.2
+    smooth_sd: 2
+  masker:
+    active: false
+
+  embedder:
+    stack:
+      active: true
+
+  factors:
+    active: false
+
+neural_pretrainer:
+  zero_infinity: true
+  loss:
+    type: ctc
+
+eval:
+  save_data: false
+masker_scheduler:
+  active: false

@@ -1,6 +1,8 @@
 import os
+import wandb 
 import argparse
 from tqdm import tqdm
+import random
 from functools import partial
 
 import torch
@@ -18,6 +20,7 @@ from utils.config_utils import update_config, config_from_kwargs, ParseKwargs
 from utils.data_utils import NeuralPretrainerDataset, pt_pad_collate_fn
 from utils.eval_utils import format_ctc, word_error_count, smoothed_RMS
 from utils.optim_utils import WarmupCosineScheduler
+from torch.optim.lr_scheduler import OneCycleLR
 
 DEFAULT_CONFIG_FILE = "configs/default_pretrain_config.yaml"
 
@@ -28,20 +31,25 @@ def reset_seeds(seed):
     # torch.backends.cudnn.benchmark = False
 
 def main(args):
-    torch.set_printoptions(profile="full")
-    
+
     # Get configs
     config = update_config(DEFAULT_CONFIG_FILE, args.config_file if args.config_file != "none" else None) 
     config = update_config(config, config_from_kwargs(args.kwargs))
 
+    # Initialize wand and biases
+    if config.log_to_wandb:
+        run = wandb.init(config.wandb_project)
+        config = update_config(config, config_from_kwargs(wandb.config, convert=False))
+
     accelerator = Accelerator()
     reset_seeds(config.seed)
     accelerator.print(f"Starting run {config.savestring}")
+    accelerator.print(config)
 
     # Create saving paths
-    checkpoint_dir = os.path.join(config.checkpoint_dir,config.savestring)
-    pt_dir = os.path.join(config.pt_dir,config.savestring)
-    log_dir = os.path.join(config.log_dir,config.savestring)
+    checkpoint_dir = os.path.join(config.dirs.checkpoint_dir,config.savestring)
+    pt_dir = os.path.join(config.dirs.pt_dir,config.savestring)
+    log_dir = os.path.join(config.dirs.log_dir,config.savestring)
     if not os.path.exists(checkpoint_dir):
         os.makedirs(checkpoint_dir)
     if not os.path.exists(pt_dir):
@@ -50,8 +58,8 @@ def main(args):
     writer = SummaryWriter(log_dir=log_dir)
 
     # Load preprocessed dataset
-    print(f"Loading data from {os.path.join(config.data_dir, config.data_file)}")
-    data = torch.load(os.path.join(config.data_dir, config.data_file))
+    print(f"Loading data from {os.path.join(config.dirs.data_dir, config.data_file)}")
+    data = torch.load(os.path.join(config.dirs.data_dir, config.data_file))
 
     # Get vocabulary info
     vocab = data["train"]["info"]["vocab"] if config.neural_pretrainer.loss.type == "ctc" else None
@@ -62,27 +70,45 @@ def main(args):
     train_data = data["train"]
     test_data = data["test"]
 
-    train_dataset = NeuralPretrainerDataset(train_data, loss_fn=config.neural_pretrainer.loss.type, len=config.trainer.train_len)
-    test_dataset = NeuralPretrainerDataset(test_data, loss_fn=config.neural_pretrainer.loss.type, len=config.trainer.test_len)
 
-    train_dataloader = DataLoader(
-        train_dataset, shuffle=True, collate_fn=partial(pt_pad_collate_fn,blank_id), batch_size=config.trainer.train_batch_size, pin_memory=True
-    )
-    test_dataloader = DataLoader(
-        test_dataset, collate_fn=partial(pt_pad_collate_fn,blank_id), batch_size=config.trainer.test_batch_size, pin_memory=True
-    )   
+    # Create day-specific dataloaders
+    train_dataset = {}
+    train_dataloader = {}
+    dates = []
+    steps_per_epoch = 0
+    if config.day_specific:
+        for date_idx in range(config.neural_encoder.embedder.n_dates):
+            train_dataset[date_idx] = NeuralPretrainerDataset(train_data, date_idx=date_idx, loss_fn=config.neural_pretrainer.loss.type, len=config.trainer.train_len)
+            train_dataloader[date_idx] = DataLoader(
+                train_dataset[date_idx], shuffle=True, collate_fn=partial(pt_pad_collate_fn,blank_id), batch_size=config.trainer.train_batch_size, pin_memory=True
+            )
+            dates += [date_idx]*len(train_dataloader[date_idx])
+            steps_per_epoch += len(train_dataloader[date_idx])
+        
+    else:
+        train_dataset[0] = NeuralPretrainerDataset(train_data, loss_fn=config.neural_pretrainer.loss.type, len=config.trainer.train_len)
 
+        train_dataloader[0] = DataLoader(
+            train_dataset[0], shuffle=True, collate_fn=partial(pt_pad_collate_fn,blank_id), batch_size=config.trainer.train_batch_size, pin_memory=True
+        )
+        dates += [0]*len(train_dataloader[0])
+        steps_per_epoch = len(train_dataloader[0])
 
-    # Create encoder model for pretraining
-    config["neural_config"]["embedder"]["n_channels"] = train_data["model_inputs"]["features"][0].shape[-1]
-    accelerator.print(config)
     
-    encoder = NeuralEncoder(config.neural_config)
+    # Test dataset doesn't need to be day specific
+    test_dataset = NeuralPretrainerDataset(test_data, date_idx=None,loss_fn=config.neural_pretrainer.loss.type, len=config.trainer.test_len)
+    test_dataloader = DataLoader(
+                test_dataset, collate_fn=partial(pt_pad_collate_fn,blank_id), batch_size=config.trainer.test_batch_size, pin_memory=True
+        )
+
+    
+    # Create encoder model for pretraining
+    encoder = NeuralEncoder(config.neural_encoder)
     model = NeuralPretrainer(encoder, config.neural_pretrainer, vocab_size, blank_id)
-    if config.model_dir is not None:  
-        print(f"Loading model from {config.model_dir}")
-        model.encoder.load_state_dict(torch.load(os.path.join(config.model_dir,"encoder.pth")))
-        model.decoder.load_state_dict(torch.load(os.path.join(config.model_dir,"decoder.pth")))
+    if config.load_pretrained:  
+        print(f"Loading model from {config.dirs.model_dir}")
+        model.encoder.load_state_dict(torch.load(os.path.join(config.dirs.model_dir,"encoder.pth")))
+        model.decoder.load_state_dict(torch.load(os.path.join(config.dirs.model_dir,"decoder.pth")))
     else:
         print("Creating model from scratch")
 
@@ -97,34 +123,35 @@ def main(args):
     if config.optimizer.scheduler == "linear":
         lr_scheduler = get_linear_schedule_with_warmup(
             optimizer=optimizer,
-            num_warmup_steps=config.optimizer.warmup_steps,
-            num_training_steps=(len(train_dataloader) * config.trainer.num_epochs),
+            num_warmup_steps=config.optimizer.warmup_epochs*steps_per_epoch,
+            num_training_steps=config.trainer.num_epochs*steps_per_epoch,
         )
     elif config.optimizer.scheduler == "cosine":
-        lr_scheduler = WarmupCosineScheduler(
+        lr_scheduler = OneCycleLR(
             optimizer=optimizer,
-            warmup_epochs=config.optimizer.warmup_epochs,
-            warmup_lr=0,
-            num_epochs=config.trainer.num_epochs,
-            base_lr=config.optimizer.lr,
-            final_lr=0,
-            iter_per_epoch=len(train_dataloader)
+            total_steps=config.trainer.num_epochs*steps_per_epoch,
+            max_lr=config.optimizer.lr,
+            pct_start=config.optimizer.warmup_epochs / config.trainer.num_epochs
         )
     else:
         raise Exception(f"Scheduler '{config.optimizer.scheduler}' not implemented")
 
     # Prepare model for distributed training
-    model, train_dataloader, test_dataloader, optimizer, lr_scheduler = accelerator.prepare(
-        model, train_dataloader, test_dataloader, optimizer, lr_scheduler
+    prepared = accelerator.prepare(
+        model, *train_dataloader.values(), test_dataloader, optimizer, lr_scheduler
     )
+    model, *train_dataloader, test_dataloader, optimizer, lr_scheduler = prepared
+    train_dataloader = {i: value for i, value in enumerate(train_dataloader)}
 
     # Train
     print("Start pretraining")
     for epoch in range(1,config.trainer.num_epochs+1):
-        
-        print(f"Training epoch {epoch}")
-        
+        print(f"Epoch {epoch}")
         model.train()
+
+        train_iterator = {key: enumerate(value) for key, value in train_dataloader.items()}
+        random.shuffle(dates)
+
 
         # Train metrics
         train_loss = []
@@ -149,17 +176,22 @@ def main(args):
         train_targets = []
         train_targets_mask = []
 
+
         # Schedule for the probability of expanding the mask
-        if config.masker_scheduler.do:
+        if config.masker_scheduler.active:
             expand_prob = max(0, min(1, (epoch - config.masker_scheduler.start) / (config.masker_scheduler.end - config.masker_scheduler.start)))
             model.encoder.masker.expand_prob = expand_prob
 
-        for step, (batch, phonograms, sentences) in enumerate(tqdm(train_dataloader)):
-    
+        for step in tqdm(range(steps_per_epoch)):
+            
+            date_idx = dates[step]
+            (j,(batch, phonograms, sentences)) = next(train_iterator[date_idx])
+
+            # Forward pass
             outputs = model(**batch)
             loss = outputs.loss
 
-            # Gather general train metrics
+            # Gather train metrics
             train_loss.append(loss.detach().item())
             train_examples.append(outputs.n_examples)
 
@@ -185,7 +217,7 @@ def main(args):
                 train_sentences += sentences
                 train_phonograms += phonograms
                 train_logits.append(logits)
-                writer.add_scalar("PER/train_iter",errors/phonemes, 1+step+(epoch-1)*len(train_dataloader))
+                writer.add_scalar("PER/train_iter",errors/phonemes, 1+step+(epoch-1)*steps_per_epoch)
             elif config.neural_pretrainer.loss.type == "poisson":
 
                 preds = outputs.outputs.detach().cpu()
@@ -208,10 +240,10 @@ def main(args):
                 train_targets_mask.append(targets_mask)
 
 
-                writer.add_scalar("RMS/train_iter",(train_RMS[-1]/train_examples[-1])**0.5, 1+step+(epoch-1)*len(train_dataloader))
-                writer.add_scalar("AllRMS/train_iter",(train_all_RMS[-1]/train_all_examples[-1])**0.5, 1+step+(epoch-1)*len(train_dataloader))
+                writer.add_scalar("RMS/train_iter",(train_RMS[-1]/train_examples[-1])**0.5, 1+step+(epoch-1)*steps_per_epoch)
+                writer.add_scalar("AllRMS/train_iter",(train_all_RMS[-1]/train_all_examples[-1])**0.5, 1+step+(epoch-1)*steps_per_epoch)
 
-            writer.add_scalar("Loss/train_iter",train_loss[-1]/train_examples[-1], 1+step+(epoch-1)*len(train_dataloader))
+            writer.add_scalar("Loss/train_iter",train_loss[-1]/train_examples[-1], 1+step+(epoch-1)*steps_per_epoch)
             
         # Log to tensorboard
         train_epoch_loss = sum(train_loss) / sum(train_examples)
@@ -273,8 +305,8 @@ def main(args):
                 errors, phonemes = word_error_count(preds, phonograms)
                 test_errors.append(errors)
                 test_phonemes.append(phonemes)
-                preds = [pred.replace(" ","").replace("SIL"," SIL ") for pred in preds]
-                phonograms = [p.replace(" ","").replace("SIL"," SIL ") for p in phonograms]
+                preds = [pred.replace(" ","").replace("SIL"," SIL ").strip() for pred in preds]
+                phonograms = [p.replace(" ","").replace("SIL"," SIL ").strip() for p in phonograms]
                 test_preds += preds
                 test_sentences += sentences
                 test_phonograms += phonograms
@@ -314,10 +346,11 @@ def main(args):
             writer.add_scalar("PER/test",test_epoch_PER,epoch)
         elif config.neural_pretrainer.loss.type == "poisson":
             test_epoch_RMS = (sum(test_RMS) / sum(test_examples))**0.5
-            writer.add_scalar("RMS/test",test_epoch_RMS,epoch)
             test_epoch_all_RMS = (sum(test_all_RMS) / sum(test_all_examples))**0.5
+            writer.add_scalar("RMS/test",test_epoch_RMS,epoch)
             writer.add_scalar("AllRMS/test",test_epoch_all_RMS,epoch)
-        
+
+
         if config.neural_pretrainer.loss.type == "ctc":
             print("TRAIN: ")
             for pred, p, s in zip(train_preds[:20], train_phonograms[:20], train_sentences[:20]):
@@ -326,8 +359,26 @@ def main(args):
             for pred, p, s in zip(test_preds[:20], test_phonograms[:20], test_sentences[:20]):
                 print(f"Sentence: {s} \nPhonograms: {p} \nPrediction: {pred} \n")
             accelerator.print(f"{epoch=}: {train_epoch_loss=} {test_epoch_loss=} {train_epoch_PER=} {test_epoch_PER=}")
+            if config.log_to_wandb:
+                wandb.log({
+                    "epoch": epoch,
+                    "train_epoch_loss": train_epoch_loss,
+                    "test_epoch_loss": test_epoch_loss ,
+                    "train_epoch_PER": train_epoch_PER,
+                    "test_epoch_PER": test_epoch_PER,
+                })
         elif config.neural_pretrainer.loss.type == "poisson":
             accelerator.print(f"{epoch=}: {train_epoch_loss=} {test_epoch_loss=} {train_epoch_RMS=} {test_epoch_RMS=}")
+            if config.log_to_wandb:
+                wandb.log({
+                    "epoch": epoch,
+                    "train_epoch_loss": train_epoch_loss,
+                    "test_epoch_loss": test_epoch_loss ,
+                    "train_epoch_RMS": train_epoch_RMS,
+                    "test_epoch_RMS": train_epoch_RMS,
+                    "train_epoch_all_RMS": train_epoch_all_RMS,
+                    "test_epoch_all_RMS": train_epoch_all_RMS,
+                })
 
         # Save checkpoints 
         must_save = (config.trainer.save_every is not None and epoch%config.trainer.save_every == 0) or epoch in config.trainer.save_epochs
@@ -399,3 +450,5 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     main(args)
+
+    

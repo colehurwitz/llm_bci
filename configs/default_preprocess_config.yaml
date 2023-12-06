@@ -7,7 +7,4 @@ splits: ["train","test","competitionHoldOut"]  # which data to load
 feature: "tx1"            # feature to extract
 prompt: ""                # add prompt before sentence 
 zscore: true              # normalize blocks
-gauss_smooth: true        # apply gaussian smoothing to neural features
-padding_mode: "constant"  # padding config for gaussian filter 
-sd:  2                    # standard deviation of gaussian kernel (it's 40ms * sd wide)
 

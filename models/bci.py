@@ -9,7 +9,6 @@ from transformers.utils import ModelOutput
 
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
 
 from models.peft_wrapper import PeftModelForBCI, PeftConfig
 from models.llama_decoder import LlamaDecoderWithLMHead
@@ -66,19 +65,19 @@ class BCI(LlamaPreTrainedModel):
 
         # Encode neural signal
         features_embeds = self.encoder(features, features_mask, features_timestamp, block_idx, date_idx) # (batch_size, fea_len, hidden_size)
-        B, F, n = features_embeds.size()
+        B, T, n = features_embeds.size()
 
         # Pad to be evenly stacked
-        if F % self.stacking != 0:
-            new_fea_len = math.ceil(F / self.stacking) * self.stacking
-            features_embeds = torch.cat((torch.zeros(B, new_fea_len - F, n).to(features_embeds.device, features_embeds.dtype), features_embeds), 1)
-            features_mask = torch.cat((torch.zeros(B, new_fea_len - F).to(features_mask.device, features_mask.dtype), features_mask), 1).to(features_mask.dtype)
-            F = new_fea_len
+        if T % self.stacking != 0:
+            new_fea_len = math.ceil(T / self.stacking) * self.stacking
+            features_embeds = torch.cat((torch.zeros(B, new_fea_len - T, n).to(features_embeds.device, features_embeds.dtype), features_embeds), 1)
+            features_mask = torch.cat((torch.zeros(B, new_fea_len - T).to(features_mask.device, features_mask.dtype), features_mask), 1).to(features_mask.dtype)
+            T = new_fea_len
         
         # Stack and project
-        features_embeds = features_embeds.view(B,F//self.stacking,n*self.stacking)
+        features_embeds = features_embeds.view(B,T//self.stacking,n*self.stacking)
         features_embeds = self.stack_projector(features_embeds)
-        features_mask = features_mask.view(B, F//self.stacking, self.stacking)
+        features_mask = features_mask.view(B, T//self.stacking, self.stacking)
         features_mask = (features_mask.sum(-1) == self.stacking).to(attention_mask.dtype) # only keep new features that contain no padding
 
         # Embed tokens of sentence

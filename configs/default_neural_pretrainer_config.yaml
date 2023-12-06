@@ -1,3 +1,5 @@
+#CTC
+zero_infinity: false
 
 # Poisson MM
 use_lograte: true     # true to treat the model predicitons as logrates (thus exponentiate before PoissonNLL)

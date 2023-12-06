@@ -1,12 +1,9 @@
 seed: 1
-savestring: lora.dropout.0.6
-data_file: processed.data
+savestring: phonemes_ft
+data_file: phonemes_data.pth
 
-data_dir: /n/home07/djimenezbeneto/lab/datasets/BCI/competitionData
-model_dir: /n/home07/djimenezbeneto/lab/models/BCI
-checkpoint_dir: /n/home07/djimenezbeneto/lab/BCI/checkpoints
-ft_dir: /n/home07/djimenezbeneto/lab/BCI/ft_models
-log_dir: /n/home07/djimenezbeneto/lab/BCI/logs
+
+dirs: include:sc_dirs.yaml
 
 trainer:
   num_epochs: 5
@@ -20,7 +17,7 @@ trainer:
 optimizer:
   lr: 1e-4
   wd: 0.01
-  warmup_ratio: 0.1
+  warmup_epochs: 0
 
 lora:
   r: 8

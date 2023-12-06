@@ -6,9 +6,6 @@ import yaml
 class DictConfig(dict):
 
     def __getattr__(self, name):
-        # To avoid an exception in case the field is not initialised but it's called
-        if name not in self.keys():
-            return None
 
         value = self[name]
         if isinstance(value, dict):

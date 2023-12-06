@@ -18,6 +18,7 @@ optimizer:
   lr: 1e-4
   wd: 0.01
   warmup_epochs: 0
+  scheduler: cosine
 
 lora:
   r: 8
@@ -26,10 +27,10 @@ lora:
   target_modules: ["q_proj","k_proj","v_proj","o_proj"]
 
 
-bci: include:configs/default_bci_config.yaml  # this could be null as the bci model already loads this default config but it's good to have it available in the finetuning script
+# bci: include:configs/default_bci_config.yaml  # this could be null as the bci model already loads this default config but it's good to have it available in the finetuning script
 # bci: null
 
 
-generation:
-  max_new_tokens: 16
-  do_sample: false
+# generation:
+#   max_new_tokens: 16
+#   do_sample: false

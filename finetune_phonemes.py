@@ -8,13 +8,12 @@ from torch.utils.data import DataLoader
 from torch.utils.tensorboard import SummaryWriter
 
 from accelerate import Accelerator
-from datasets import load_from_disk
 from transformers import AutoTokenizer, get_linear_schedule_with_warmup, LlamaForCausalLM
 
 from peft import LoraConfig
 
 from utils.config_utils import update_config, config_from_kwargs, ParseKwargs
-from utils.data_utils import PhonemesFinetuningDataset, ft_pad_collate_fn
+from utils.data_utils import PhonemesFinetuneDataset, ft_pad_collate_fn
 from utils.eval_utils import word_error_count
 
 DEFAULT_CONFIG_FILE = "configs/default_finetune_config.yaml"
@@ -35,9 +34,9 @@ def main(args):
     reset_seeds(config.seed)
 
     # Create saving paths
-    checkpoint_dir = os.path.join(config.checkpoint_dir,config.savestring)
-    ft_dir = os.path.join(config.ft_dir,config.savestring)
-    log_dir = os.path.join(config.log_dir,config.savestring)
+    checkpoint_dir = os.path.join(config.dirs.checkpoint_dir,config.savestring)
+    ft_dir = os.path.join(config.dirs.ft_dir,config.savestring)
+    log_dir = os.path.join(config.dirs.log_dir,config.savestring)
     if not os.path.exists(checkpoint_dir):
         os.makedirs(checkpoint_dir)
 
@@ -51,7 +50,7 @@ def main(args):
 
 
     # Load model with peft adapter for decoder
-    model = LlamaForCausalLM.from_pretrained(config.model_dir)  
+    model = LlamaForCausalLM.from_pretrained(config.dirs.model_dir)  
     model = get_peft_model(model, peft_config) 
 
     accelerator.print(model)
@@ -62,7 +61,7 @@ def main(args):
     pad_id = tokenizer.eos_token_id
 
     # Load preprocessed dataset
-    data = torch.load(os.path.join(config.data_dir, config.data_file))
+    data = torch.load(os.path.join(config.dirs.data_dir, config.data_file))
     train_data = data["train"]
     test_data = data["test"]
 
@@ -86,13 +85,13 @@ def main(args):
     if config.optimizer.scheduler == "linear":
         lr_scheduler = get_linear_schedule_with_warmup(
             optimizer=optimizer,
-            num_warmup_steps=config.optimizer.warmup_epochs*steps_per_epoch,
-            num_training_steps=config.trainer.num_epochs*steps_per_epoch,
+            num_warmup_steps=config.optimizer.warmup_epochs*len(train_dataloader),
+            num_training_steps=config.trainer.num_epochs*len(train_dataloader),
         )
     elif config.optimizer.scheduler == "cosine":
         lr_scheduler = OneCycleLR(
             optimizer=optimizer,
-            total_steps=config.trainer.num_epochs*steps_per_epoch,
+            total_steps=config.trainer.num_epochs*len(train_dataloader),
             max_lr=config.optimizer.lr,
             pct_start=config.optimizer.warmup_epochs / config.trainer.num_epochs
         )

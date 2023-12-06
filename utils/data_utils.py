@@ -117,7 +117,7 @@ targets are the phonemes/subwords to align. For "poisson" loss, targets are the 
 class NeuralPretrainerDataset(Dataset):
 
      
-    def __init__(self, data, loss_fn="ctc", len = None):
+    def __init__(self, data, date_idx=None, loss_fn="ctc", len = None):
         self.data = data
         self.loss_fn = loss_fn
         
@@ -125,10 +125,18 @@ class NeuralPretrainerDataset(Dataset):
         self.has_phonogram = "info" in self.data and "phonogram" in self.data["info"]
         if len is not None:
             self.data["model_inputs"] = {key: self.data["model_inputs"][key][:len] for key in self.data["model_inputs"]}
-            if self.has_sentence :
+            if self.has_sentence:
                 self.data["info"]["sentence"] = self.data["info"]["sentence"][:len] 
             if self.has_phonogram:
                 self.data["info"]["phonogram"] = self.data["info"]["phonogram"][:len]
+        
+        if date_idx is not None:
+            keep_idx = (self.data["date_idx"] == )[0].tolist()
+            self.data["model_inputs"] = {key: self.data["model_inputs"][key][keep_idx] for key in self.data["model_inputs"]}
+            if self.has_sentence:
+                self.data["info"]["sentence"] = self.data["info"]["sentence"][keep_idx] 
+            if self.has_phonogram:
+                self.data["info"]["phonogram"] = self.data["info"]["phonogram"][keep_idx]
 
     def __len__(self):
         return len(self.data["model_inputs"]["features"])
@@ -231,3 +239,71 @@ def pt_pad_collate_fn(blank_id, batch):
 
     return padded_batch, [batch[i]["phonogram"] for i in range(len(batch))], [batch[i]["sentence"] for i in range(len(batch))]
         
+
+""" Dataset for finetuning the LLM to decode words from phonemes. If len = None then all the data is used. 
+"""
+class PhonemesFinetuneDataset(Dataset):
+
+     
+    def __init__(self, data, len = None):
+        self.data = data
+        
+        if len is not None:
+            self.data["model_inputs"] = {key: self.data["model_inputs"][key][:len] for key in self.data["model_inputs"]}
+            self.data["info"]["sentence"] = self.data["info"]["sentence"][:len]
+            self.data["info"]["phonogram"] = self.data["info"]["phonogram"][:len]
+
+    def __len__(self):
+        return len(self.data["model_inputs"]["input_ids"])
+
+    def __getitem__(self, idx):
+
+        return {
+            "input_ids": self.data["model_inputs"]["input_ids"][idx].clone(),
+            "labels": self.data["model_inputs"]["labels"][idx].clone(),
+            "attention_mask": self.data["model_inputs"]["attention_mask"][idx].clone(),
+            "phonogram": deepcopy(self.data["info"]["phonogram"][idx]),
+            "sentence": deepcopy(self.data["info"]["sentence"][idx]),
+        }
+
+
+""" Batch data. Returns
+        Dict {
+            "input_ids":            torch.LongTensor    -   token ids for phonemes + sentence
+            "attention_mask":       torch.LongTensor    -   0. for masked tokens, 1. for visible tokens
+            "labels":               torch.LongTensor    -   same as input_ids for the sentence, -100 for phonemes
+        }
+        List[str]                                       -   target phonograms
+        List[str]                                       -   target sentences
+
+    The first Dict can be dierctly fed to LLM. The Lists of phonograms and sentences are used for evaluation
+"""  
+def ft_pad_collate_fn(pad_id, batch):
+    padded_batch = {}
+    padded_batch["input_ids"] = []
+    padded_batch["labels"] = []
+    padded_batch["attention_mask"] = []
+
+    # Batch nodes and features
+    max_seq_len = max([len(batch[i]["input_ids"]) for i in range(len(batch))])
+
+    for i in range(len(batch)):
+        seq_len = len(batch[i]["input_ids"])
+        pad_seq_len = max_seq_len - seq_len   
+        pad_seq = torch.ones(pad_seq_len, dtype=torch.int64)*pad_id
+        mask_seq = torch.zeros(pad_seq_len, dtype=torch.int64)
+        pad_lab = torch.ones(pad_seq_len, dtype=torch.int64) * (-100)
+
+        padded_batch["input_ids"].append(torch.cat((pad_seq,batch[i]["input_ids"]),-1))
+        padded_batch["labels"].append(torch.cat((pad_lab, batch[i]["labels"]),-1))
+        padded_batch["attention_mask"].append(torch.cat((mask_seq, batch[i]["attention_mask"]),-1))
+       
+
+    padded_batch = {key: torch.stack(padded_batch[key]) for key in padded_batch}
+    
+    # To check that the dtypes are ok
+    for key in padded_batch:
+        print(key, padded_batch[key].dtype)
+
+
+    return padded_batch, [batch[i]["phonogram"] for i in range(len(batch))], [batch[i]["sentence"] for i in range(len(batch))]

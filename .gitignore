@@ -8,6 +8,7 @@ checkpoints
 pt_models
 ft_models
 eval_pretrain.py
+*environment*
 
 
 # Byte-compiled / optimized / DLL files

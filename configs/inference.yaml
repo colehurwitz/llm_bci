@@ -1,0 +1,53 @@
+seed: 1
+savestring: phonemes_inference
+data_file: phonemes_data.pth
+log_to_wandb: false
+wandb_project: phonemes_inference
+
+dirs: include:configs/sc_dirs.yaml
+
+prompt: "phonemes: {} sentences:"
+
+noise: null
+
+trainer:
+  save_data: false
+  num_epochs: 1
+  save_epochs: []
+  save_every: 1       # epochs to save
+  eval_every: 1       # steps to evaluate
+  train_len: -1       # -1 to use whole set
+  test_len: -20        # -1 to use whole set
+  test_batch_size: 4
+  train_batch_size: 4
+
+optimizer:
+  lr: 1.e-4
+  wd: 0.01
+  eps: 1.e-8
+  warmup_pct: 0.0
+  gamma: 0.85
+  scheduler: step
+
+lora:
+  r: 0
+  alpha: 32
+  dropout: 0.0
+  target_modules: ["q_proj","v_proj"] #,"k_proj","o_proj"]
+
+
+# bci: include:configs/default_bci_config.yaml  # this could be null as the bci model already loads this default config but it's good to have it available in the finetuning script
+# bci: null
+
+
+generation:
+  max_new_tokens: 24
+  do_sample: True
+  top_p: 0.2
+  top_k: 50
+  temperature: 1.0
+  repetition_penalty: 1.0
+  length_penalty: 1.0
+  min_length: null
+  num_beams: 5
+  num_beam_groups: 1

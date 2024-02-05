@@ -5,7 +5,7 @@ from peft import PeftModel, PeftConfig
 # Peft wrapper that is compatible with models without LM head
 # Only changes w.r.t PeftModelForCausalLM is that this model doesn't force "labels" in the module signature,
 # and eliminated code for other use cases (prompt learning, generation)
-class PeftModelForBCI(PeftModel):
+class PeftModelWithoutLabels(PeftModel):
     """
     Peft model for causal language modeling without labels.
 

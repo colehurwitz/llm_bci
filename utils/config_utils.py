@@ -6,7 +6,6 @@ import yaml
 class DictConfig(dict):
 
     def __getattr__(self, name):
-
         value = self[name]
         if isinstance(value, dict):
             value = DictConfig(value)
@@ -99,6 +98,9 @@ def convert_to_dtype(value):
     # Catch list
     if value[0] == "[" and value[-1] == "]":
         value = [convert_to_dtype(v) for v in value[1:-1].split(",")]
+    # Catch None
+    elif value == "null" or value == "None" or value == "none":
+        value = None
     # Catch bool
     elif value == "true" or value == "True":
         value = True

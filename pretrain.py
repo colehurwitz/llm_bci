@@ -1,13 +1,15 @@
 import os
+from functools import partial
+
 import wandb 
 import argparse
 from tqdm import tqdm
 import random
-from functools import partial
 
 import torch
 from torch.utils.data import DataLoader
 from torch.utils.tensorboard import SummaryWriter
+from torch.optim.lr_scheduler import OneCycleLR
 
 from accelerate import Accelerator
 from datasets import load_from_disk
@@ -20,7 +22,7 @@ from utils.config_utils import update_config, config_from_kwargs, ParseKwargs
 from utils.data_utils import NeuralPretrainerDataset, pt_pad_collate_fn
 from utils.eval_utils import format_ctc, word_error_count, smoothed_RMS
 from utils.optim_utils import WarmupCosineScheduler
-from torch.optim.lr_scheduler import OneCycleLR
+
 
 DEFAULT_CONFIG_FILE = "configs/default_pretrain_config.yaml"
 

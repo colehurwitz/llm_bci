@@ -39,6 +39,10 @@ CHANGES
 
 
 TO DO
+- Add spiking noise
+- Make fast inference using past_key_values (get the input embedings and pass them to a regular LlamaModel with the appropraite weights)
+- GENERATION STRATEGY
+
 - DON'T COUNT SIL FOR THE PHONEME ERROR
 -subwords instead of phonemes
 -Using higher lr for encoder and lower for decoder?
@@ -50,13 +54,10 @@ TO DO
 -context span also for llama
 -data augmentation by choosing subset of channels?
 -penalization proportional to the frequency of the token
--generation strategy
+-null value
 
 OBS
--computing the phoneme error rate is 20 slower than the pretraining
 - bins are 20 ms long
-- WER in finetune.py is not very informative because the predictions are based in previous 
-subtokens. -> maybe we want to use a BERT-like model instead of Llama?
 -Max block and date index has to be specified in NeuralConfig, read from preprocess.py output
 - BLOCK 25 is only in test set. Train blocks:  {1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 23, 24}
 Test blocks: {8, 12, 13, 14, 15, 16, 17, 18, 19, 20, 25}. Heldout blocks: {1, 2, 3, 4, 6, 7}

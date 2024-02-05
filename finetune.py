@@ -194,8 +194,9 @@ def main(args):
     writer.flush()
     writer.close()
 
-    # Save finetuned model
-    model.merge_adapter()
+    # Save finetuned model    
+    if model._is_peft:
+        model.merge_adapter()
     model.save_pretrained(ft_dir)
 
 if __name__ == "__main__":

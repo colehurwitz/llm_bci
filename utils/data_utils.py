@@ -1,4 +1,6 @@
 import torch
+import torch.nn as nn
+import torch.nn.functional as F
 from torch.utils.data import Dataset
 from copy import deepcopy
 
@@ -131,7 +133,7 @@ class NeuralPretrainerDataset(Dataset):
                 self.data["info"]["phonogram"] = self.data["info"]["phonogram"][:len]
         
         if date_idx is not None:
-            keep_idx = (self.data["date_idx"] == )[0].tolist()
+            keep_idx = (self.data["date_idx"] == date_idx)[0].tolist()
             self.data["model_inputs"] = {key: self.data["model_inputs"][key][keep_idx] for key in self.data["model_inputs"]}
             if self.has_sentence:
                 self.data["info"]["sentence"] = self.data["info"]["sentence"][keep_idx] 
@@ -242,68 +244,258 @@ def pt_pad_collate_fn(blank_id, batch):
 
 """ Dataset for finetuning the LLM to decode words from phonemes. If len = None then all the data is used. 
 """
-class PhonemesFinetuneDataset(Dataset):
-
-     
-    def __init__(self, data, len = None):
+class PhonemesFinetuneDataset(Dataset):     
+    def __init__(self, data):
         self.data = data
-        
-        if len is not None:
-            self.data["model_inputs"] = {key: self.data["model_inputs"][key][:len] for key in self.data["model_inputs"]}
-            self.data["info"]["sentence"] = self.data["info"]["sentence"][:len]
-            self.data["info"]["phonogram"] = self.data["info"]["phonogram"][:len]
 
     def __len__(self):
-        return len(self.data["model_inputs"]["input_ids"])
+        return len(self.data["sentence"])
 
     def __getitem__(self, idx):
-
         return {
-            "input_ids": self.data["model_inputs"]["input_ids"][idx].clone(),
-            "labels": self.data["model_inputs"]["labels"][idx].clone(),
-            "attention_mask": self.data["model_inputs"]["attention_mask"][idx].clone(),
-            "phonogram": deepcopy(self.data["info"]["phonogram"][idx]),
-            "sentence": deepcopy(self.data["info"]["sentence"][idx]),
+            "prompt_ids": self.data["prompt_ids"].clone(),
+            "text_ids": self.data["text_ids"][idx].clone(),
+            "text_labels": self.data["text_labels"][idx].clone(),
+            "phoneme_logits": self.data["phoneme_logits"][idx].clone(),
+            "phonemes_start": self.data["phonemes_start"].clone(),
+            "sentence": deepcopy(self.data["sentence"][idx]),
+            "true_phonemes": deepcopy(self.data["true_phonemes"][idx]),
+            "pred_phonemes": deepcopy(self.data["pred_phonemes"][idx]),
         }
+
+
+
+""" Mask some of the phonemes
+"""
+def add_mask(config, split, mask, start, end):
+    if config is None or split != "train":
+        return mask
+
+    for i in range(len(mask)):
+        print("before",int(torch.round(config.ratio / (config.max_span//2+1) * (end[i] - start[i] + 1)).item()), mask[i,start[i].item():end[i].item()])
+        indices = torch.randint(
+            start[i].item(), end[i].item()+1, 
+            (int(torch.round(config.ratio / (config.max_span//2+1) * (end[i] - start[i] + 1)).item()),)
+        )
+        
+        spans = torch.randint(
+            1, config.max_span+1,
+            (len(indices),)
+        )
+
+        for idx, sp in zip(indices, spans):
+            mask[i,idx:(min(idx + sp, end[i].item()))] = 0
+        print("after", mask[i,start[i].item():end[i].item()])
+
+    return mask
+
+
+
+""" Add fake spikes and gaussian noise to the logits
+"""
+def add_noise(config, split, logits):
+    if config is None or split != "train":
+        return logits
+
+    probabilities = torch.zeros(config.max_spikes+1)
+    probabilities[0] = (1-config.p_spike)
+    probabilities[1:] = config.p_spike / config.max_spikes
+    n_fake = torch.multinomial(probabilities, logits.size(0), replacement=True)
+    for i, n in enumerate(n_fake):
+        indices = torch.randint(0, logits.size(1), (n,))
+        values = torch.rand(n) * config.spike_scale * (logits[i].max() - logits[i].min()).item()
+        logits[i, indices] += values.to(logits)
+
+    return logits + (config.gauss_mean + torch.randn_like(logits)*config.gauss_sd)
+
 
 
 """ Batch data. Returns
-        Dict {
-            "input_ids":            torch.LongTensor    -   token ids for phonemes + sentence
-            "attention_mask":       torch.LongTensor    -   0. for masked tokens, 1. for visible tokens
-            "labels":               torch.LongTensor    -   same as input_ids for the sentence, -100 for phonemes
+        
+        "model_inputs": Dict {
+            "input_ids":        torch.LongTensor        -   (batch, seq_len_text)
+            "attention_mask":   torch.LongTensor        -   (batch, seq_len_text)
+            "phoneme_logits":   List[torch.FloatTensor] -   (batch, seq_len_text, vocab)
+            "phonemes_start":   torch.LongTensor        -   (batch)
+            "phonemes_end":     torch.LongTensor        -   (batch)
+            "labels":      torch.LongTensor        -   (batch, seq_len_text)
         }
-        List[str]                                       -   target phonograms
-        List[str]                                       -   target sentences
-
-    The first Dict can be dierctly fed to LLM. The Lists of phonograms and sentences are used for evaluation
+        "prompt_inputs": Dict {
+            "input_ids":        torch.LongTensor        -   (batch, seq_len_text)
+            "attention_mask":   torch.LongTensor        -   (batch, seq_len_text)
+            "phoneme_logits":   List[torch.FloatTensor] -   (batch, seq_len_text, vocab)
+            "phonemes_start":   torch.LongTensor        -   (batch)
+            "phonemes_end":     torch.LongTensor        -   (batch)
+        }
+        "sentences":            List[str]               -   (batch)
+        "true_phonemes":        List[str]               -   (batch)
+        "pred_phonemes":        List[str]               -   (batch)
 """  
-def ft_pad_collate_fn(pad_id, batch):
-    padded_batch = {}
-    padded_batch["input_ids"] = []
-    padded_batch["labels"] = []
-    padded_batch["attention_mask"] = []
+def ft_pad_collate_fn(noise_config, mask_config, pad_id, split, batch):
 
-    # Batch nodes and features
-    max_seq_len = max([len(batch[i]["input_ids"]) for i in range(len(batch))])
+    text_lens = [len(row["text_ids"]) + len(row["phoneme_logits"]) for row in batch]
+    max_text_len = max(text_lens)
+    prompt_lens = [len(row["prompt_ids"]) + len(row["phoneme_logits"]) for row in batch]
+    max_prompt_len = max(prompt_lens)
 
-    for i in range(len(batch)):
-        seq_len = len(batch[i]["input_ids"])
-        pad_seq_len = max_seq_len - seq_len   
-        pad_seq = torch.ones(pad_seq_len, dtype=torch.int64)*pad_id
-        mask_seq = torch.zeros(pad_seq_len, dtype=torch.int64)
-        pad_lab = torch.ones(pad_seq_len, dtype=torch.int64) * (-100)
-
-        padded_batch["input_ids"].append(torch.cat((pad_seq,batch[i]["input_ids"]),-1))
-        padded_batch["labels"].append(torch.cat((pad_lab, batch[i]["labels"]),-1))
-        padded_batch["attention_mask"].append(torch.cat((mask_seq, batch[i]["attention_mask"]),-1))
-       
-
-    padded_batch = {key: torch.stack(padded_batch[key]) for key in padded_batch}
+    model_inputs = {k: [] for k in ["input_ids", "labels", "attention_mask", "phonemes_start", "phonemes_end"]}
+    prompt_inputs = {k: [] for k in ["input_ids", "attention_mask", "phonemes_start", "phonemes_end"]}
     
-    # To check that the dtypes are ok
-    for key in padded_batch:
-        print(key, padded_batch[key].dtype)
+    for row in batch:
+        text_pad = max_text_len - len(row["text_ids"]) - len(row["phoneme_logits"])
+        prompt_pad = max_prompt_len - len(row["prompt_ids"]) - len(row["phoneme_logits"])
+        logits_pad = len(row["phoneme_logits"])
+
+        a = row["phonemes_start"]
+        model_inputs["input_ids"].append(torch.cat(
+            (
+                torch.ones(text_pad).long()*pad_id, 
+                row["text_ids"][:a], 
+                torch.ones(logits_pad).long()*pad_id, 
+                row["text_ids"][a:]
+            ), dim=0
+        ))
+        model_inputs["labels"].append(torch.cat(
+            (
+                torch.ones(text_pad).long()*(-100), 
+                row["text_labels"][:a],
+                torch.ones(logits_pad).long()*(-100), 
+                row["text_labels"][a:],
+            ), dim=0
+        ))
+        model_inputs["attention_mask"].append(torch.cat(
+            (
+                torch.zeros(text_pad).long(), 
+                torch.ones(a).long(),
+                torch.ones(logits_pad).long(),
+                torch.ones(len(row["text_labels"][a:])).long(),
+            ), dim=0
+        ))
+        model_inputs["phonemes_start"].append(
+            row["phonemes_start"] + text_pad
+        )
+        model_inputs["phonemes_end"].append(
+            row["phonemes_start"] + text_pad + logits_pad
+        )
+
+        prompt_inputs["input_ids"].append(torch.cat(
+            (
+                torch.ones(prompt_pad).long()*pad_id, 
+                row["prompt_ids"][:a], 
+                torch.ones(logits_pad).long()*pad_id, 
+                row["prompt_ids"][a:]
+            ), dim=0
+        ))
+        prompt_inputs["attention_mask"].append(torch.cat(
+            (
+                torch.zeros(prompt_pad).long(), 
+                torch.ones(len(row["prompt_ids"][:a])).long(),
+                torch.ones(logits_pad).long(),
+                torch.ones(len(row["prompt_ids"][a:])).long()
+            ), dim=0
+        ))
+        prompt_inputs["phonemes_start"].append(
+            row["phonemes_start"] + prompt_pad
+        )
+        prompt_inputs["phonemes_end"].append(
+            row["phonemes_start"] + prompt_pad + logits_pad
+        )
+
+    model_inputs = {k: torch.stack(v, dim=0) for k,v in model_inputs.items()}
+    model_inputs["phoneme_logits"] = [add_noise(noise_config, split, row["phoneme_logits"]) for row in batch]
+    prompt_inputs = {k: torch.stack(v, dim=0) for k,v in prompt_inputs.items()}
+    prompt_inputs["phoneme_logits"] = [add_noise(noise_config, split, row["phoneme_logits"]) for row in batch]
+
+    model_inputs["attention_mask"] = add_mask(mask_config, split, model_inputs["attention_mask"], model_inputs["phonemes_start"], model_inputs["phonemes_end"])
+    prompt_inputs["attention_mask"] = add_mask(mask_config, split, prompt_inputs["attention_mask"], prompt_inputs["phonemes_start"], prompt_inputs["phonemes_end"])
+    
+
+    if split == "train":
+        return model_inputs, [row["sentence"] for row in batch], [row["true_phonemes"] for row in batch], [row["pred_phonemes"] for row in batch]
+    elif split == "test":
+        return model_inputs, prompt_inputs, [row["sentence"] for row in batch], [row["true_phonemes"] for row in batch], [row["pred_phonemes"] for row in batch]
 
 
-    return padded_batch, [batch[i]["phonogram"] for i in range(len(batch))], [batch[i]["sentence"] for i in range(len(batch))]
+
+""" Stack consecutive logits to reduce length
+"""
+def stack_logits(logits, config):
+    size = config.size if config is not None else 1
+    stride = config.stride if config is not None else 1
+    stacking = nn.Unfold(kernel_size=(size, logits.size(1)),stride=(stride,1))
+    return stacking(logits.unsqueeze(0).unsqueeze(1)).transpose(1,2).squeeze(0)
+
+""" Convert sentences to phonemes and index
+"""
+PHONEMES_VOCAB = [
+    'AA', 'AE', 'AH', 'AO', 'AW', 
+    'AY', 'B', 'CH', 'D', 'DH',
+    'EH', 'ER', 'EY', 'F', 'G',
+    'HH', 'IH', 'IY', 'JH', 'K', 
+    'L', 'M', 'N', 'NG', 'OW',
+    'OY', 'P', 'R', 'S', 'SH', 
+    'T', 'TH', 'UH', 'UW', 'V', 
+    'W', 'Y', 'Z', 'ZH', 'SIL', 'BLANK'
+]
+
+def s_to_p(s, g2p):
+    # keep only phonemes and add SIL at the end so that every word ends in SIL
+    return [re.sub(r'[0-9]','',pp) if pp != " " else "SIL" for pp in g2p(s) if re.match(r'[A-Z]+', pp) or pp == " "] + ["SIL"] 
+
+def p_to_i(p):
+    return [PHONEMES_VOCAB.index(pp) for pp in p]
+
+""" Data should be a list of sentences and possibly a list of phoneme_logits. The parameters for adding gaussian
+    noise to the logits are set in config
+"""
+def prepare_phonemes_data(data, tokenizer, g2p, prompt, stack_config=None):
+
+    # If we don't have logits, we create one-hot logits
+    if not "phoneme_logits" in data:
+        data["pred_phonemes"] = [s_to_p(s, g2p) for s in data["sentence"]]
+        data["true_phonemes"] = data["pred_phonemes"]
+        data["phoneme_logits"] = [F.one_hot(p, num_classes=len(PHONEMES_VOCAB )) for p in data["pred_phonemes"]]
+    # Assume that if we have logits we also have true_phonemes and pred_phonemes
+    else:
+        data["phoneme_logits"] = [torch.tensor(l) for l in data["phoneme_logits"]]
+    
+    new_logits = []
+    for l in data["phoneme_logits"]:
+        new_l = stack_logits(l, stack_config)
+        new_l = new_l.view(len(new_l), l.size(1), -1).mean(-1)
+        new_logits.append(new_l)
+    data["phoneme_logits"] = new_logits
+        
+    # Tokenize the prompt by parts
+    text_a = prompt.split("%%")[0]
+    text_b = prompt.split("%%")[1]
+    text_b_full = []
+    for s in data["sentence"]:
+        text_b_full.append(prompt.split("%%")[1] + " " + s + tokenizer.eos_token)
+
+
+    text_a = tokenizer(
+            tokenizer.bos_token + text_a, truncation=False, return_tensors="pt"
+    )["input_ids"][0]
+    text_b = tokenizer(
+            text_b, truncation=False, return_tensors="pt"
+    )["input_ids"][0]
+    text_b_full = tokenizer(
+            text_b_full, truncation=False, 
+    )
+
+    # Create prompt model inputs
+    data["prompt_ids"] = torch.cat((text_a,text_b),dim=0)
+    data["text_ids"] = [torch.cat((text_a,torch.tensor(b_full)),dim=0) for b_full in text_b_full["input_ids"]]
+    text_labels = deepcopy(data["text_ids"])
+    prompt_len = len(text_a) + len(text_b)
+    for i in range(len(text_labels)):
+        text_labels[i][:prompt_len] = -100
+    data["text_labels"] = text_labels
+    data["phonemes_start"] = torch.tensor(len(text_a))
+    
+    # Format sentences and phonemes
+    data["pred_phonemes"] = [" ".join(pred).replace(" ","").replace("SIL"," ").strip().lower() for pred in data["pred_phonemes"]]
+    data["true_phonemes"] = [" ".join(phon).replace(" ","").replace("SIL"," ").strip().lower() for phon in data["true_phonemes"]]
+
+    return data

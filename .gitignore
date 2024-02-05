@@ -9,7 +9,8 @@ pt_models
 ft_models
 eval_pretrain.py
 *environment*
-
+*.pth
+*.png
 
 # Byte-compiled / optimized / DLL files
 __pycache__/

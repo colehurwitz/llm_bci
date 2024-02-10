@@ -1,8 +1,0 @@
-data_dir: /home/llm4bci/competitionData
-model_dir: /home/llm4bci/LLM
-checkpoint_dir: /home/llm4bci/checkpoints
-ft_dir: /home/llm4bci/ft_models
-pt_dir: /home/llm4bci/pt_models
-log_dir: /home/llm4bci/logs
-tokenizer_dir: /home/llm4bci/LLM
-

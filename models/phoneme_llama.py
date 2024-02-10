@@ -6,7 +6,6 @@ from typing import Optional, List
 
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
 
 from transformers import LlamaPreTrainedModel, LlamaConfig
 from transformers.utils import ModelOutput
@@ -58,33 +57,23 @@ class PhonemeLlama(LlamaPreTrainedModel):
 
     def forward(
             self,
-            input_ids:              torch.LongTensor,                   # (batch, seq_len)
-            attention_mask:         torch.LongTensor,                   # (batch, seq_len)
-            phoneme_logits:         List[torch.FloatTensor],            # batch * [(seq_len_phon, vocab)]
-            phonemes_start:         torch.LongTensor,                   # (batch)
-            phonemes_end:           torch.LongTensor,                   # (batch)
-            labels:                 Optional[torch.LongTensor] = None,  # (batch, seq_len)
-            **kwargs, # added for compatibility with hf model.generate
+            input_ids:          torch.LongTensor,                   # (batch, seq_len)
+            attention_mask:     torch.LongTensor,                   # (batch, seq_len)
+            phoneme_logits:     List[torch.FloatTensor],            # batch * [(seq_len_phon, vocab)]
+            phonemes_start:     torch.LongTensor,                   # (batch)
+            phonemes_end:       torch.LongTensor,                   # (batch)
+            labels:             Optional[torch.LongTensor] = None,  # (batch, seq_len)
         ) -> PhonemeLlamaOutput:
-
-
-        # Embed logits
-        if self.coupler_config.softmax:
-            phoneme_logits = [F.softmax(l, dim=-1) for l in phoneme_logits]
-        phoneme_embeds = [self.coupler(l) for l in phoneme_logits]              # (batch, seq_len_phon, hidden_size)
-
-        # Embed tokens of sentence
-        text_embeds = self.decoder.transformer.embed_tokens(input_ids)          # (batch, seq_len, hidden_size)
-
-        # Substitute phoneme_embeds in input embeds
-        inputs_embeds = self.sub_embeds(text_embeds, phoneme_embeds, phonemes_start, phonemes_end)
         
-        torch.save({"a": attention_mask, "l": phoneme_logits, "i": input_ids, "l": labels}, "in.pth")
+
+        inputs_embeds = self.prepare_embeds(input_ids, phoneme_logits, phonemes_start, phonemes_end)
+        
         # Forward decoder
         logits = self.decoder(  
             inputs_embeds=inputs_embeds,
             attention_mask=attention_mask,
-        )   # (batch, seq_len, vocab)
+            return_dict=True,
+        ).logits   # (batch, seq_len, vocab)
     
         loss = None
         n_examples = None
@@ -109,6 +98,20 @@ class PhonemeLlama(LlamaPreTrainedModel):
         )
     
 
+    """ Prepare embeddings for llm decoder
+    """ 
+    def prepare_embeds(self, input_ids, phoneme_logits, phonemes_start, phonemes_end):
+        
+        # Embed tokens of sentence
+        text_embeds = self.decoder.transformer.embed_tokens(input_ids)  # (batch, seq_len, hidden_size)
+        
+        # Embed phoneme logits
+        phoneme_embeds = [self.coupler(l) for l in phoneme_logits]      # (batch, seq_len_phon, hidden_size)
+
+        # Substitute phoneme_embeds in input embeds
+        return self.sub_embeds(text_embeds, phoneme_embeds, phonemes_start, phonemes_end)
+
+
     """ Substitute phoneme embeddings into text embeddings
     """ 
     def sub_embeds(self, text_embeds,phoneme_embeds, phonemes_start, phonemes_end):
@@ -123,29 +126,20 @@ class PhonemeLlama(LlamaPreTrainedModel):
 
         return torch.stack(input_embeds, dim=0)
 
+    def predict(
+            self,
+            input_ids:          torch.LongTensor,                   # (batch, seq_len)
+            attention_mask:     torch.LongTensor,                   # (batch, seq_len)
+            phoneme_logits:     List[torch.FloatTensor],            # batch * [(seq_len_phon, vocab)]
+            phonemes_start:     torch.LongTensor,                   # (batch)
+            phonemes_end:       torch.LongTensor,                   # (batch)
+            synced_gpus:        bool,
+            **gen_config:       DictConfig,
+        ) -> List[torch.LongTensor]:
 
+        inputs_embeds = self.prepare_embeds(input_ids, phoneme_logits, phonemes_start, phonemes_end)
 
-    """ Override hf method (requirment for generation)
-    """
-    def prepare_inputs_for_generation(
-            self, input_ids,  attention_mask=None, phoneme_logits=None, phonemes_start=None, phonemes_end=None, 
-            use_past_key_values=None, **kwargs
-        ):
-
-        # HF does repeat_interleave on input tensors to perform beam seearch. It misses phoneme_logits because
-        # it is a list rather than a tensor. We have to manually repeat it here accordingly.
-        num_beams=len(attention_mask)//len(phoneme_logits)
-        phoneme_logits =[a for chunk in [[l]*num_beams for l in phoneme_logits] for a in chunk] 
-
-        model_inputs = {   
-                "input_ids": input_ids,
-                "attention_mask": attention_mask,
-                "phoneme_logits": phoneme_logits,
-                "phonemes_start": phonemes_start,
-                "phonemes_end":   phonemes_end,
-            }
-        
-        return model_inputs
+        return self.decoder.generate(inputs_embeds=inputs_embeds, **gen_config, synced_gpus=synced_gpus)
 
 
     ## LOADING METHODS ##

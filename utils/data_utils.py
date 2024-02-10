@@ -2,7 +2,9 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from torch.utils.data import Dataset
+
 from copy import deepcopy
+import re
 
 """ Dataset for finetuning the BCI. If len = None then all the data is used. In "train" and "test" splits, the input_ids, labels, and
     attention_mask are for the prompt+sentence. In "info" split, these are for prompt only. 
@@ -268,11 +270,10 @@ class PhonemesFinetuneDataset(Dataset):
 """ Mask some of the phonemes
 """
 def add_mask(config, split, mask, start, end):
-    if config is None or split != "train":
+    if config is None or split != "train" or config.ratio < 0.01:
         return mask
 
     for i in range(len(mask)):
-        print("before",int(torch.round(config.ratio / (config.max_span//2+1) * (end[i] - start[i] + 1)).item()), mask[i,start[i].item():end[i].item()])
         indices = torch.randint(
             start[i].item(), end[i].item()+1, 
             (int(torch.round(config.ratio / (config.max_span//2+1) * (end[i] - start[i] + 1)).item()),)
@@ -285,7 +286,6 @@ def add_mask(config, split, mask, start, end):
 
         for idx, sp in zip(indices, spans):
             mask[i,idx:(min(idx + sp, end[i].item()))] = 0
-        print("after", mask[i,start[i].item():end[i].item()])
 
     return mask
 
@@ -294,19 +294,34 @@ def add_mask(config, split, mask, start, end):
 """ Add fake spikes and gaussian noise to the logits
 """
 def add_noise(config, split, logits):
-    if config is None or split != "train":
-        return logits
 
-    probabilities = torch.zeros(config.max_spikes+1)
-    probabilities[0] = (1-config.p_spike)
-    probabilities[1:] = config.p_spike / config.max_spikes
-    n_fake = torch.multinomial(probabilities, logits.size(0), replacement=True)
-    for i, n in enumerate(n_fake):
-        indices = torch.randint(0, logits.size(1), (n,))
-        values = torch.rand(n) * config.spike_scale * (logits[i].max() - logits[i].min()).item()
-        logits[i, indices] += values.to(logits)
+    if split == "train":
 
-    return logits + (config.gauss_mean + torch.randn_like(logits)*config.gauss_sd)
+        logits += (config.gauss_mean + torch.randn_like(logits)*config.gauss_sd)
+
+        probabilities = torch.zeros(config.max_spikes+1)
+        probabilities[0] = (1-config.p_spike)
+        probabilities[1:] = config.p_spike / config.max_spikes
+        n_fake = torch.multinomial(probabilities, logits.size(0), replacement=True)
+        # truncate = torch.bernoulli(torch.ones(logits.size(0))*config.p_trunc)
+
+        for i, n in enumerate(n_fake):
+            indices = torch.randint(0, logits.size(1), (n,))
+            values = torch.rand(n) * config.spike_scale * (logits[i].max() - logits[i].min()).item()
+            logits[i, indices] += values.to(logits)
+            # if t:
+            #     trunc = torch.rand(1)*(config.max_trunc - config.min_trunc) +  config.min_trunc
+            #     ind_max = torch.argmax(logits[i])
+            #     logits[i,ind_max] *= trunc.item() 
+
+    if config.norm == "softmax":
+        logits = F.softmax(logits/config.temperature, dim=1) 
+    elif config.norm == "logsoftmax":
+        logits = F.log_softmax(logits/config.temperature, dim=1) 
+    elif config.norm != "identity":
+        raise Exception(f"Norm for logits '{config.norm}' not implemented")
+    
+    return logits
 
 
 
@@ -417,13 +432,13 @@ def ft_pad_collate_fn(noise_config, mask_config, pad_id, split, batch):
 
 
 
-""" Stack consecutive logits to reduce length
-"""
-def stack_logits(logits, config):
-    size = config.size if config is not None else 1
-    stride = config.stride if config is not None else 1
-    stacking = nn.Unfold(kernel_size=(size, logits.size(1)),stride=(stride,1))
-    return stacking(logits.unsqueeze(0).unsqueeze(1)).transpose(1,2).squeeze(0)
+# """ Stack consecutive logits to reduce length
+# """
+# def stack_logits(logits, config):
+#     size = config.size if config is not None else 1
+#     stride = config.stride if config is not None else 1
+#     stacking = nn.Unfold(kernel_size=(size, logits.size(1)),stride=(stride,1))
+#     return stacking(logits.unsqueeze(0).unsqueeze(1)).transpose(1,2).squeeze(0)
 
 """ Convert sentences to phonemes and index
 """
@@ -448,23 +463,14 @@ def p_to_i(p):
 """ Data should be a list of sentences and possibly a list of phoneme_logits. The parameters for adding gaussian
     noise to the logits are set in config
 """
-def prepare_phonemes_data(data, tokenizer, g2p, prompt, stack_config=None):
+def prepare_phonemes_data(data, tokenizer, g2p, prompt):
 
     # If we don't have logits, we create one-hot logits
-    if not "phoneme_logits" in data:
-        data["pred_phonemes"] = [s_to_p(s, g2p) for s in data["sentence"]]
-        data["true_phonemes"] = data["pred_phonemes"]
-        data["phoneme_logits"] = [F.one_hot(p, num_classes=len(PHONEMES_VOCAB )) for p in data["pred_phonemes"]]
-    # Assume that if we have logits we also have true_phonemes and pred_phonemes
-    else:
-        data["phoneme_logits"] = [torch.tensor(l) for l in data["phoneme_logits"]]
-    
-    new_logits = []
-    for l in data["phoneme_logits"]:
-        new_l = stack_logits(l, stack_config)
-        new_l = new_l.view(len(new_l), l.size(1), -1).mean(-1)
-        new_logits.append(new_l)
-    data["phoneme_logits"] = new_logits
+    for i in range(len(data["phoneme_logits"])):
+        if data["phoneme_logits"][i] is None:
+            data["phoneme_logits"][i] = F.one_hot(torch.tensor(p_to_i(data["pred_phonemes"][i])), num_classes=len(PHONEMES_VOCAB )).to(torch.float)
+        else:
+            data["phoneme_logits"][i] = torch.tensor(data["phoneme_logits"][i]).to(torch.float)
         
     # Tokenize the prompt by parts
     text_a = prompt.split("%%")[0]

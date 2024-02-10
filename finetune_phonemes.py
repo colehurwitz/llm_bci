@@ -82,7 +82,6 @@ def main(args):
         target_modules=config.lora.target_modules
     )
 
-
     if config.debug:
         accelerator.print(f"Creating small model for debugging")
         llama_config = LlamaConfig(num_hidden_layers=2, hidden_size=32, intermediate_size=32,  num_attention_heads=4)
@@ -126,9 +125,9 @@ def main(args):
     accelerator.print(f"Loading data from {os.path.join(config.dirs.data_dir, config.data_file)}")
     data = torch.load(os.path.join(config.dirs.data_dir, config.data_file))
     train_data = {k: v[:config.trainer.train_len] for k,v in data["train"].items()}
-    train_data = prepare_phonemes_data(train_data, tokenizer, g2p, config.prompt, config.stack)
+    train_data = prepare_phonemes_data(train_data, tokenizer, g2p, config.prompt)
     test_data = {k: v[:config.trainer.test_len] for k,v in data["test"].items()}
-    test_data = prepare_phonemes_data(test_data, tokenizer, g2p, config.prompt, config.stack)
+    test_data = prepare_phonemes_data(test_data, tokenizer, g2p, config.prompt)
     
     train_dataset = PhonemesFinetuneDataset(train_data)
     test_dataset = PhonemesFinetuneDataset(test_data)
@@ -294,7 +293,7 @@ def main(args):
                     test_aid_preds += aid_preds
 
                     # Inference  
-                    preds = model.generate(
+                    preds = model.predict(
                             **prompt_inputs,
                             **config.generation,
                             synced_gpus=is_ds_zero_3
@@ -372,33 +371,35 @@ def main(args):
                 model.train()     
 
             # Save checkpoints
-            if (1+ len(train_dataloader)*(epoch-1) + step) % config.trainer.save_every == 0 and accelerator.is_main_process:
+            if (1+ len(train_dataloader)*(epoch-1) + step) % config.trainer.save_every == 0:
                 save_to_path = os.path.join(checkpoint_dir,f"EP{epoch}-STEP{step}")
-                if not os.path.exists(save_to_path):
+                if not os.path.exists(save_to_path) and accelerator.is_main_process:
                     os.makedirs(save_to_path)
 
                 accelerator.print(f"Saving checkpoint at step {1+ len(train_dataloader)*(epoch-1) + step} to {save_to_path}")
                 if model._is_peft:
-                    accelerator.unwrap_model(model).save_adapter(save_to_path)
-                accelerator.unwrap_model(model).save_coupler(save_to_path)
-                torch.save(dict(config), os.path.join(save_to_path,"config.pth"))
-                
-                if config.trainer.save_data:
-                    torch.save({
-                        "train": {
-                            "sentences": train_sentences,
-                            "true_phonemes": train_true_phonemes,
-                            "pred_phonemes": train_pred_phonemes,
-                            "preds": train_preds,
-                        },
-                        "test": { 
-                            "sentences": test_sentences,
-                            "true_phonemes": test_true_phonemes,
-                            "pred_phonemes": test_pred_phonemes,
-                            "preds": test_preds,
-                            "aid_preds": test_aid_preds,
-                        },
-                    }, os.path.join(save_to_path, "data.pth"))
+                    model.save_adapter(save_to_path)
+                model.save_coupler(save_to_path)
+
+                if accelerator.is_main_process:
+                    torch.save(dict(config), os.path.join(save_to_path,"config.pth"))
+                    
+                    if config.trainer.save_data:
+                        torch.save({
+                            "train": {
+                                "sentences": train_sentences,
+                                "true_phonemes": train_true_phonemes,
+                                "pred_phonemes": train_pred_phonemes,
+                                "preds": train_preds,
+                            },
+                            "test": { 
+                                "sentences": test_sentences,
+                                "true_phonemes": test_true_phonemes,
+                                "pred_phonemes": test_pred_phonemes,
+                                "preds": test_preds,
+                                "aid_preds": test_aid_preds,
+                            },
+                        }, os.path.join(save_to_path, "data.pth"))
                     
                 # Reset train metrics
                 train_loss = []
@@ -420,7 +421,8 @@ def main(args):
     writer.close()
 
     # Save finetuned model¡
-    if not config.freeze_llm:
+    accelerator.print("Saving finetuned model")
+    if model._is_peft:
         model.merge_adapter()
     model.save_pretrained(ft_dir)
     accelerator.print("Training done")

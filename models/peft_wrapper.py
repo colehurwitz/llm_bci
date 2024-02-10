@@ -1,3 +1,5 @@
+from typing import Optional, List
+
 import torch
 
 from peft import PeftModel, PeftConfig
@@ -22,11 +24,25 @@ class PeftModelWithoutLabels(PeftModel):
 
     def forward(
             self,
-            inputs_embeds: torch.FloatTensor,
-            attention_mask: torch.FloatTensor,
-        ) -> torch.FloatTensor:
+            input_ids:              Optional[torch.LongTensor]          = None,
+            inputs_embeds:          Optional[torch.FloatTensor]         = None,
+            attention_mask:         Optional[torch.Tensor]              = None,
+            position_ids:           Optional[torch.LongTensor]          = None,
+            past_key_values:        Optional[List[torch.FloatTensor]]   = None,
+            use_cache:              Optional[bool] = None,
+            output_attentions:      Optional[bool] = None,
+            output_hidden_states:   Optional[bool] = None,
+            return_dict:            Optional[bool] = None,
+        ):
 
         return self.base_model(
+            input_ids=input_ids,
             inputs_embeds=inputs_embeds,
             attention_mask=attention_mask,
+            position_ids=position_ids,
+            past_key_values=past_key_values,
+            use_cache=use_cache,
+            output_attentions=output_attentions,
+            output_hidden_states=output_hidden_states,
+            return_dict=return_dict,
         )

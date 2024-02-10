@@ -39,9 +39,16 @@ CHANGES
 
 
 TO DO
-- Add spiking noise
+make argmax LOW in trainset
+ppo with accuracy as reward
+nucleus sampling    -> less diversity than group search
+replicate rnn with llm -> we already did and doesnt seem to work, also transformers for time series dont work
+contiue with phoneme  ft (solving another poblem)
+early stoping the rrnn to avoid of of train set 
+minimize train/test gap with regularization/?
+
 - Make fast inference using past_key_values (get the input embedings and pass them to a regular LlamaModel with the appropraite weights)
-- GENERATION STRATEGY
+- GENERATION STRATEGY - nucleus sampling
 
 - DON'T COUNT SIL FOR THE PHONEME ERROR
 -subwords instead of phonemes

@@ -1,12 +1,12 @@
 seed: 1
 savestring: test
-data_file: competitionData/phonemes_data.pth
+data_file: mix_data.pth
 log_to_wandb: false
 wandb_project: phonemes_ft
 
 dirs: include:configs/sc_dirs.yaml
 
-freeze_llm: true
+freeze_llm: false
 debug: false
 
 # prompt: "You are an expert decoding words from speech recordings. This is a sequence of phonemes \
@@ -16,27 +16,23 @@ debug: false
 
 prompt: "phonemes: %% sentence:"
 
-stack:
-  size: 1
-  stride: 1
-  
 trainer:
   save_data: true
   num_epochs: 1
-  save_every: 8        # steps to save
-  eval_every: 8         # steps to evaluate
+  save_every: 1000         # steps to save
+  eval_every: 1000         # steps to evaluate
   train_len: -1           # -1 to use whole set
-  test_len: 64           # -1 to use whole set
+  test_len: 256           # -1 to use whole set
   train_batch_size: 1
   test_batch_size: 1
 
 optimizer:
-  gradient_accumulation_steps: 4
+  gradient_accumulation_steps: 16
   lr: 1.e-4
   wd: 0.01
   eps: 1.e-8
   warmup_pct: 0.0
-  gamma: 0.95
+  gamma: 0.99
   scheduler: step
 
 lora:
@@ -46,7 +42,7 @@ lora:
   target_modules: ["q_proj","v_proj"] #,"k_proj","o_proj"]
 
 generation:
-  max_new_tokens: 12
+  max_new_tokens: 20
   do_sample: False
   # top_p: null
   # top_k: 50
@@ -65,14 +61,19 @@ generation:
   # return_dict_in_generate: false
 
 noise:
+  norm: identity       #softmax/logsoftmax/identity
+  temperature: 1
   gauss_mean: 0.0
-  gauss_sd: 7.0
-  max_spikes: 2
-  p_spike: 0.2
-  spike_scale: 0.8
+  gauss_sd: 0.5
+  max_spikes: 3
+  p_spike: 0.6
+  spike_scale: 3.0
+  # p_trunc: 0.4
+  # max_trunc: 0.9
+  # min_trunc: 0.4
 
 mask:
-  ratio: 0.15
-  max_span: 1
+  ratio: 0.0
+  max_span: 5
 
 coupler: include:configs/phoneme_coupler.yaml

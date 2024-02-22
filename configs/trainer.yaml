@@ -31,7 +31,6 @@ data:
     vocab_file: vocab.json
 
   dataloader_kwargs:
-    prompt_keys: null
     pad_dict:
       spikes:
         dim: 0
@@ -47,7 +46,7 @@ trainer:
   train_len: null # null to use all
   test_len: null
   shuffle_test_dataloader: false
-  
+
   
 optimizer:
   gradient_accumulation_steps: 4

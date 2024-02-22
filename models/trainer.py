@@ -115,8 +115,6 @@ class Trainer():
             self.config = update_config(self.config, config_from_kwargs(wandb.config, convert=False))
         
 
-
-
     """ Create train and test dataloaders
     """
     def build_dataloaders(self):
@@ -161,7 +159,8 @@ class Trainer():
                 gamma=config.optimizer.gamma)
         else:
             raise Exception(f"Scheduler '{config.optimizer.scheduler}' not implemented")
-        
+
+
     """ Accelerate method for distributed training
     """
     def prepare_for_distributed_training(self):
@@ -170,6 +169,10 @@ class Trainer():
         self.model, self.train_dataloader, self.test_dataloader, self.optimizer, self.lr_scheduler
     )
 
+
+    """ Evaluate the model with possible additional metric functions. Returns average test
+    loss and averaged metrics.
+    """
     def evaluate(
         self,
         additional_metric_fns: Optional[Dict[Callable]] = None,
@@ -207,6 +210,8 @@ class Trainer():
         return test_avg_loss, test_avg_metrics
 
 
+    """ Training loop 
+    """
     def train(self):
         
         config = self.config
@@ -223,7 +228,7 @@ class Trainer():
         train_metrics = {name: [] for name in self.metric_fns.keys()}
 
         for epoch in range(1, config.trainer.num_epochs+1):
-            self.print_(f"Epoch {epoch}", verbosity=1)
+            self.print_v(f"Epoch {epoch}", verbosity=1)
             self.model.train()
 
             for step, (model_inputs, unused_inputs) in enumerate(tqdm(self.train_dataloader) if verbosity <= 1 else self.train_dataloader):
@@ -313,13 +318,12 @@ class Trainer():
             global_step += 1    
 
             if config.optimizer.scheduler in ["step"]:
-                lr_scheduler.step()
+                self.lr_scheduler.step()
 
+        self.writer.flush()
+        self.writer.close()
 
-        writer.flush()
-        writer.close()
-
-    accelerator.print("Training done")
+        self.print_v("Training done", verbosity=1)
 
 
                     

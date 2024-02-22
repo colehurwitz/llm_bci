@@ -1,0 +1,31 @@
+name: iTransformer
+
+encoder:
+  from_pt: null
+  max_n_bins: 200
+  hidden_size: 256
+  activation: relu
+  bias: true
+  dropout: 0.5
+  n_heads: 8
+  n_layers: 4
+
+decoder:
+  from_pt: null
+  method: sft
+  activation: relu
+  use_lograte: true
+  activation: relu
+  vocab_size: 41
+  zero_infinity: false
+  
+
+
+  
+
+
+
+
+
+
+

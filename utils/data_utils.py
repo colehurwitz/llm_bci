@@ -6,6 +6,9 @@ from torch.utils.data import Dataset
 from copy import deepcopy
 import re
 
+
+
+
 """ Dataset for finetuning the BCI. If len = None then all the data is used. In "train" and "test" splits, the input_ids, labels, and
     attention_mask are for the prompt+sentence. In "info" split, these are for prompt only. 
 """
@@ -53,7 +56,7 @@ class BCIDataset(Dataset):
 
 """ Batch data. Returns
         Dict {
-            "input_ids":            torch.LongTensor    -   token ids for each sentence
+            "input_ids":            torch.LongTensor   -   token ids for each sentence
             "attention_mask":       torch.LongTensor   -   0. for masked tokens, 1. for visible tokens
             "labels":               torch.LongTensor    -   same as input_ids for the sentence, -100 for pad and prompt
             "features":             torch.FloatTensor   -   neural signal features
@@ -242,6 +245,13 @@ def pt_pad_collate_fn(blank_id, batch):
     # print("date_idx", padded_batch["date_idx"][:4], padded_batch["date_idx"].shape, padded_batch["date_idx"].dtype)
 
     return padded_batch, [batch[i]["phonogram"] for i in range(len(batch))], [batch[i]["sentence"] for i in range(len(batch))]
+        
+
+
+
+
+
+
         
 
 """ Dataset for finetuning the LLM to decode words from phonemes. If len = None then all the data is used. 
@@ -468,20 +478,21 @@ def prepare_phonemes_data(data, tokenizer, g2p, prompt):
     # If we don't have logits, we create one-hot logits
     for i in range(len(data["phoneme_logits"])):
         if data["phoneme_logits"][i] is None:
+            print("AA")
             data["phoneme_logits"][i] = F.one_hot(torch.tensor(p_to_i(data["pred_phonemes"][i])), num_classes=len(PHONEMES_VOCAB )).to(torch.float)
         else:
-            data["phoneme_logits"][i] = torch.tensor(data["phoneme_logits"][i]).to(torch.float)
+            data["phoneme_logits"][i] = torch.tensor(data["phoneme_logits"][i])
         
     # Tokenize the prompt by parts
-    text_a = prompt.split("%%")[0]
+    text_a = tokenizer.bos_token + prompt.split("%%")[0]
     text_b = prompt.split("%%")[1]
     text_b_full = []
     for s in data["sentence"]:
-        text_b_full.append(prompt.split("%%")[1] + " " + s + tokenizer.eos_token)
+        text_b_full.append(text_b + " " + s + tokenizer.eos_token)
 
 
     text_a = tokenizer(
-            tokenizer.bos_token + text_a, truncation=False, return_tensors="pt"
+            text_a, truncation=False, return_tensors="pt"
     )["input_ids"][0]
     text_b = tokenizer(
             text_b, truncation=False, return_tensors="pt"
@@ -505,3 +516,5 @@ def prepare_phonemes_data(data, tokenizer, g2p, prompt):
     data["true_phonemes"] = [" ".join(phon).replace(" ","").replace("SIL"," ").strip().lower() for phon in data["true_phonemes"]]
 
     return data
+
+

@@ -1,6 +1,6 @@
 seed: 1
 savestring: test
-data_file: mix_data.pth
+data_file: competitionData/phonemes_data.pth
 log_to_wandb: false
 wandb_project: phonemes_ft
 
@@ -17,60 +17,59 @@ debug: false
 prompt: "phonemes: %% sentence:"
 
 trainer:
-  save_data: true
-  num_epochs: 1
-  save_every: 1000         # steps to save
-  eval_every: 1000         # steps to evaluate
+  save_data: false
+  num_epochs: 10
+  save_every: 1500         # steps to save
+  eval_every: 1500         # steps to evaluate
   train_len: -1           # -1 to use whole set
-  test_len: 256           # -1 to use whole set
+  test_len: 64          # -1 to use whole set
   train_batch_size: 1
   test_batch_size: 1
 
 optimizer:
-  gradient_accumulation_steps: 16
+  gradient_accumulation_steps: 4
   lr: 1.e-4
   wd: 0.01
   eps: 1.e-8
   warmup_pct: 0.0
-  gamma: 0.99
+  gamma: 0.95
   scheduler: step
 
 lora:
   r: 1
   alpha: 32
   dropout: 0.2
-  target_modules: ["q_proj","v_proj"] #,"k_proj","o_proj"]
+  target_modules: ["q_proj","v_proj"]
+  modules_to_save: null #["embed_tokens"]
 
 generation:
   max_new_tokens: 20
-  do_sample: False
-  # top_p: null
-  # top_k: 50
+  do_sample: True
+  top_p: 0.6
+  top_k: 40
   temperature: 1.0
-  # repetition_penalty: 1.0
-  # length_penalty: 1.0
-  # min_length: null
+  repetition_penalty: 1.0
+  length_penalty: 1.0
+  min_length: null
   # num_beams: 1
   # num_beam_groups: 1
-  # no_repeat_ngram_size: 2
-  # renormalize_logits: true
+  no_repeat_ngram_size: 2
+  renormalize_logits: true
   low_memory: true
   # diversity_penalty: 1.2
   num_return_sequences: 1
-  # output_score: false
+  # output_scores: false
   # return_dict_in_generate: false
 
 noise:
   norm: identity       #softmax/logsoftmax/identity
   temperature: 1
   gauss_mean: 0.0
-  gauss_sd: 0.5
-  max_spikes: 3
+  gauss_sd: 0.0
+  max_spikes: 2
   p_spike: 0.6
-  spike_scale: 3.0
-  # p_trunc: 0.4
-  # max_trunc: 0.9
-  # min_trunc: 0.4
+  spike_scale: 0.8
+
 
 mask:
   ratio: 0.0

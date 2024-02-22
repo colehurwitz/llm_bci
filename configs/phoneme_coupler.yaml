@@ -2,8 +2,8 @@
 input_size: 41      # must be equal to size of phonemes vocabulary (including SIL and BLANK)
 inter_size: 2048    # size of the intermediate layer in the adapter MLP
 act: tanh           # activation function in the adapter MLP
-bias: True
+bias: False
 
-loss_reduction: mean
+loss_reduction: sum
 
 

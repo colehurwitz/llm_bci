@@ -1,0 +1,39 @@
+seed: 1
+
+savestring: poisson-pretrain  
+wandb_project: itransformer
+data_file: competitionData/spiking_data.pth
+
+verbosity: 0
+
+dirs:
+  checkpoint_dir: /home/gridsan/dbeneto/TFG/BCI/pt_checkpoints
+  log_dir: /home/gridsan/dbeneto/TFG/BCI/pt_logs
+
+model: include:configs/patchtst.yaml
+
+method: 
+  model_kwargs:
+    method_name: sft     # ssl
+    vocab_size: 41
+    blank_id: 0
+    zero_infinity: false
+    
+    use_lograte: true
+    loss: mse   # poisson_nll
+
+  dataset_kwargs:
+    vocab_file: vocab.json
+
+dataset:
+  data_dir: /home/gridsan/dbeneto/MAML-Soljacic_shared/BCI/data/competitionData
+  zscore: True
+
+trainer:
+  train_name: train
+  test_name: test
+  train_len: null # null to use all
+  test_len: null
+
+optimizer:
+  gradient_accumulation_steps: 2

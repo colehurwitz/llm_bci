@@ -1,0 +1,61 @@
+name: PatchTST
+
+encoder:
+  from_pt: null
+  num_input_channels: 256
+  context_length: 200
+  patch_length: 14
+  patch_stride: 4
+  num_hidden_layers: 3
+  d_model: 128
+  num_attention_heads: 16
+  share_embedding: True
+  channel_attention: False
+  ffn_dim: 256
+  norm_type: "batchnorm" 
+  norm_eps: 1.e-5
+  attention_dropout: 0.2
+  dropout: 0.2
+  positional_dropout: 0.0
+  path_dropout: 0.0
+  ff_dropout: 0.0
+  bias: True
+  activation_function: gelu
+  pre_norm: True
+  positional_encoding_type: sincos
+  # use_cls_token: False
+  init_std: 0.02
+  scaling: "std"
+  do_mask_input: True
+  mask_type: random
+  random_mask_ratio: 0.4
+  channel_consistent_masking: false
+  # unmasked_channel_indices
+  mask_value: 0
+
+
+decoder:
+  from_pt: null
+  share_projection: true
+  pooling_type: mean
+  head_dropout: 0.2
+  mlp_decoder: True
+  mlp_activation: gelu
+  # distribution_output 
+  # loss: None,
+  # num_forecast_mask_patches:
+  # prediction_length: 
+  # num_targets
+  # output_range
+  # num_parallel_samples
+  
+
+
+  
+
+
+
+
+
+
+

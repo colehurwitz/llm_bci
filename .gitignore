@@ -11,6 +11,8 @@ eval_pretrain.py
 *environment*
 *.pth
 *.png
+wandb
+patchtst.ipynb
 
 # Byte-compiled / optimized / DLL files
 __pycache__/

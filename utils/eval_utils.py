@@ -28,7 +28,7 @@ def word_error_count(preds_0, targets_0):
     errors = 0
     words  = 0
     for pred, target in zip(preds, targets):
-        new_errors, new_words = word_edit_distance(pred.lower().strip(),target.lower().strip())
+        new_errors, new_words = word_edit_distance(pred,target)
         errors += new_errors
         words += new_words
 

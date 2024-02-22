@@ -5,58 +5,51 @@ from g2p_en import G2p
 
 import torch
 from torch.utils.data import DataLoader
-from transformers import AutoTokenizer, LlamaForCausalLM
+from transformers import AutoTokenizer, AutoModelForCausalLM
 
-from models.phoneme_llama import PhonemeLlama
+from models.phoneme_llm import PhonemeLLM
 from utils.config_utils import DictConfig, update_config
 from utils.data_utils import PhonemesFinetuneDataset, ft_pad_collate_fn, prepare_phonemes_data
 from utils.eval_utils import word_error_count
 
+torch.backends.cudnn.benchmark = True
 
 prompt = "phonemes: %% sentence:"
 checkpoint_dir = "/n/home07/djimenezbeneto/lab/BCI/checkpoints"
 checkpoint_dir = "/home/gridsan/dbeneto/TFG/BCI/checkpoints"
 
-savestring = "rank_1-lr_1.e-4-gauss_0.0-spikes_0.6_2_0.8-norm_none_1-truncate_0.1_0.1_0.6"
-EP = 5
-STEP = 2403
+savestring = "new_ft/eval_64-accum_4-rank_1-lr_1.e-4-gauss_0.0-spikes_0.6_2_0.8-norm_identity_1"
+STEP = 36249
 
 checkpoint_dir = os.path.join(checkpoint_dir, savestring)
-load_dir = os.path.join(checkpoint_dir,f"EP{EP}-STEP{STEP}")
+load_dir = os.path.join(checkpoint_dir,f"STEP{STEP}")
 config = DictConfig(torch.load(os.path.join(load_dir, "config.pth")))
 
 # config = update_config(config, "iaifi_dirs.yaml")
 # config = update_config(config, "configs/sc_dirs.yaml")
-llama_dir = config.dirs.model_dir
+llama_dir = config.dirs.llm_dir
 tokenizer_dir = config.dirs.tokenizer_dir
 
 
-config["trainer"]["test_len"] = 20
-
-print("Model 1")
-model = PhonemeLlama.from_pretrained(config.dirs.model_dir, config.coupler) 
-model.load_coupler(load_dir)
+llm = AutoModelForCausalLM.from_pretrained(config.dirs.llm_dir)
+model = PhonemeLLM(llm, load_dir)
 adapter_file = os.path.join(load_dir, "adapter_config.json")
 if os.path.isfile(adapter_file):
-    model.load_adapter(load_dir, is_trainable=(not config.freeze_llm))
-
-
+    model.load_adapter(load_dir, is_trainable=False)
 model.to("cuda")
 
-# print("Model 2")
-# llm = LlamaForCausalLM.from_pretrained(llm_dir)
 
-
-tokenizer = AutoTokenizer.from_pretrained(config.dirs.tokenizer_dir, padding_side='right', add_bos_token=False, add_eos_token=False)
+tokenizer = AutoTokenizer.from_pretrained(config.dirs.tokenizer_dir, padding_side='left', add_bos_token=False, add_eos_token=False)
 pad_id = tokenizer.eos_token_id
 g2p = G2p()
 
-data = torch.load(os.path.join(config.dirs.data_dir, config.data_file))
-train_data = {k: v[:config.trainer.train_len] for k,v in data["train"].items()}
-train_data = prepare_phonemes_data(train_data, tokenizer, g2p, prompt, config.stack)
-test_data = {k: v[:config.trainer.test_len] for k,v in data["test"].items()}
-test_data = prepare_phonemes_data(test_data, tokenizer, g2p, prompt, config.stack)
 
+config["trainer"]["test_len"] = 20
+data = torch.load(os.path.join(config.dirs.data_dir, config.data_file))
+train_data = {k: v[:config.trainer.train_len] if config.trainer.train_len != -1 else v for k,v in data["train"].items()}
+train_data = prepare_phonemes_data(train_data, tokenizer, g2p, config.prompt)
+test_data = {k: v[:config.trainer.test_len] if config.trainer.test_len != -1 else v for k,v in data["test"].items()}
+test_data = prepare_phonemes_data(test_data, tokenizer, g2p, config.prompt)
 train_dataset = PhonemesFinetuneDataset(train_data)
 test_dataset = PhonemesFinetuneDataset(test_data)
 
@@ -73,12 +66,13 @@ test_iter = iter(test_dataloader)
 
 beams = 1
 gen_config = {
-    "max_new_tokens": 12, 
-    "do_sample": False, "temperature": 1.0, "top_p": 1.0, 
+    "max_new_tokens": 20, 
+    "do_sample": False, "temperature": 1.0,  #"top_p": 1.0, 
     # "num_beams": beams, 
     # "num_beam_groups": beams, "diversity_penalty": 1.2,
     # "repetition_penalty": 0.0, "length_penalty": 0.0, "no_repeat_ngram_size": None, 
-    "renormalize_logits": True, "low_memory": True,
+    # "renormalize_logits": True, 
+    "low_memory": True,
     "num_return_sequences": beams, "output_scores": True, "return_dict_in_generate": True,
     "pad_token_id": pad_id
 }
@@ -97,16 +91,11 @@ time_c = 0.
 for i, (model_inputs, prompt_inputs, sentence, true_ph, pred_ph) in tqdm(enumerate(test_dataloader)):
     a = perf_counter()
     prompt_inputs = {k: v.to("cuda") if isinstance(v, torch.Tensor) else [sub_v.to("cuda") for sub_v in v] for k,v in prompt_inputs.items()}
-    # phoneme_embeds = [model.coupler(l) for l in prompt_inputs["phoneme_logits"]]
-    # text_embeds = model.decoder.transformer.embed_tokens(prompt_inputs["input_ids"])
-    # inputs_embeds = model.sub_embeds(text_embeds, phoneme_embeds, prompt_inputs["phonemes_start"], prompt_inputs["phonemes_end"])
-    # all_embeds.append(inputs_embeds)
-    # preds = model.decoder.generate(inputs_embeds, **gen_config)
-    preds = model.generate(**prompt_inputs, **gen_config)
+    preds = model.predict(**prompt_inputs, **gen_config, synced_gpus=None)
     b = perf_counter()
     time_b += b-a 
-    prompt_lens = [len(prompt_inputs["input_ids"][i]) for i in range(len(prompt_inputs["input_ids"]))]*gen_config["num_return_sequences"]
-    dec_preds = [tokenizer.decode(p[prompt_lens[i]:].detach().cpu().squeeze(), skip_special_tokens=True) for i, p in enumerate(preds.sequences)]
+    dec_preds = [tokenizer.decode(p.detach().cpu().squeeze(), skip_special_tokens=True) for i, p in enumerate(preds.sequences)]
+    print(dec_preds)
     scores = torch.zeros(len(preds)) #preds.sequences_scores
     scores = (scores-scores.mean())/scores.std()
     pairs = sorted([(a.item(), b) for a,b in zip(scores, dec_preds)], key=lambda x: -x[0])

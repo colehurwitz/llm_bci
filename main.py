@@ -15,4 +15,4 @@ config = update_config(DEFAULT_TRAINER_CONFIG, config_file)
 
 model_class = STR2MODEL[config.model.name]
 model = model_class(config.model)
-dataset = load_competition_data(config.dataset.data_dir, config.dataset.zscore)
+dataset = load_competition_data(config.data.data_dir, config.data.dataset_kwargs)

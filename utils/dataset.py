@@ -96,12 +96,12 @@ class SpikingDataset(Dataset):
     ):  
         self.method = method
         self.dataset = {k: v[:length] if length is not None else v for k,v dataset.items()}
-        self.dataset["spikes"] = [torch.Tensor(row, dtype=torch.float) for row in self.dataset["spikes"]]
         
         if method == "sft":
             self.g2p = G2p()
             self.vocab = json.load(open(kwargs["vocab_file"],"r"))
             self.create_ctc_labels()
+
 
     def __len__(self):
         return len(self.dataset["spikes"])
@@ -109,14 +109,14 @@ class SpikingDataset(Dataset):
     def __getitem__(self, idx):
         if self.method == "ssl":
             return {
-                "spikes": torch.Tensor(self.dataset["spikes"][idx]),    # (seq_len, num_channels)
+                "spikes": self.dataset["spikes"][idx],    # (seq_len, num_channels)
             }
         elif self.method == "sft":
-            targets = self.dataset["phonemes_idx"][idx].clone()
+            targets = self.dataset["phonemes_idx"][idx]
             return {
-                "spikes":   self.dataset["spikes"][idx].clone(),    # (seq_len, num_channels)
-                "targets":  targets,                                # (seq_len)
-                "targets_lengths": torch.Tensor(len(targets), dtype=torch.long) # (1)
+                "spikes":   self.dataset["spikes"][idx],    # (seq_len, num_channels)
+                "targets":  targets,                        # (seq_len)
+                "targets_lengths": len(targets)             # (1)
             }
         else raise Exception(f"Method {self.method} not implemented yet")
 
@@ -144,5 +144,51 @@ class SpikingDataset(Dataset):
             s.translate(str.maketrans("","",punctuation)).lower().strip()
             for s in self.dataset['sentence']
         ]
-        self.dataset["phonemes"] = [self.s_to_p(s) for s in self.dataset["sentence"]]
-        self.dataset["phonemes_idx"] = [torch.Tensor(self.p_to_i(p), dtype=torch.long) for p in self.dataset["phonemes"]]
+        self.dataset["phonemes"] = [numpy.asarray(self.s_to_p(s)) for s in self.dataset["sentence"]]
+        self.dataset["phonemes_idx"] = [numpy.asarray(self.p_to_i(p)) for p in self.dataset["phonemes"]]
+
+
+""" Batches a list of arrays that only differ in sizes in dimension "dim", padding with
+pad value.
+"""
+def padded_array(
+    arrays: List[np.ndarray],
+    dim: int,
+    pad_value: Optional[int] = 0,
+) -> np.ndarray:
+
+    max_size = max(arr.shape[dim] for arr in arrays)
+    return np.vstack([np.pad(arr, (0, max_size - arr.shape[dim]), mode='constant', constant_values=pad_value) for arr in arrays])
+
+
+
+
+""" Collate function that converts lists of ndarrays into padded torch tensors. Returns a tuple
+of dicts, padded_bacth containing model_inputs and unused_inputs containing other keys.
+"""
+def pad_collate_fn(
+    batch: List[Dict[Union[np.ndarray,Any]]], 
+    model_inputs: List[str],
+    pad_dict: Dict[Tuple(int,Any)],
+):
+    
+    keys = batch[0].keys()
+    pad_keys = pad_dict.keys()
+    array_keys = [k for k in keys if isinstance(batch[0][k],np.ndarray)]
+
+    padded_batch = {}
+    unused_inputs = {}
+    for key in keys:
+        value = [row for row in batch[k]]
+        if key in pad_keys:
+            value = padded_array(value, pad_dict[key]["dim"], pad_dict[key]["value"])
+        if key in array_keys:
+            value = torch.from_numpy(value).clone()
+        else:
+            value = deepcopy(value)
+        if key in model_inputs:
+            padded_batch[key] = value
+        else:
+            unused_inputs[key] = value
+
+    return padded_batch, unused_inputs

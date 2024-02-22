@@ -35,7 +35,9 @@ llm = AutoModelForCausalLM.from_pretrained(config.dirs.llm_dir)
 model = PhonemeLLM(llm, load_dir)
 adapter_file = os.path.join(load_dir, "adapter_config.json")
 if os.path.isfile(adapter_file):
-    model.load_adapter(load_dir, is_trainable=False)
+    model.load_lora_adapter(load_dir, is_trainable=False)
+
+    
 model.to("cuda")
 
 
@@ -44,7 +46,7 @@ pad_id = tokenizer.eos_token_id
 g2p = G2p()
 
 
-config["trainer"]["test_len"] = 20
+config["trainer"]["test_len"] = -1
 data = torch.load(os.path.join(config.dirs.data_dir, config.data_file))
 train_data = {k: v[:config.trainer.train_len] if config.trainer.train_len != -1 else v for k,v in data["train"].items()}
 train_data = prepare_phonemes_data(train_data, tokenizer, g2p, config.prompt)
@@ -64,13 +66,13 @@ train_iter = iter(train_dataloader)
 test_iter = iter(test_dataloader)
 
 
-beams = 1
+beams = 10
 gen_config = {
     "max_new_tokens": 20, 
-    "do_sample": False, "temperature": 1.0,  #"top_p": 1.0, 
-    # "num_beams": beams, 
-    # "num_beam_groups": beams, "diversity_penalty": 1.2,
-    # "repetition_penalty": 0.0, "length_penalty": 0.0, "no_repeat_ngram_size": None, 
+    "do_sample": False, "temperature": 1.0,  "top_p": 0.6, "top_k": 40, 
+    "num_beams": beams, 
+    "num_beam_groups": beams, "diversity_penalty": 1.2,
+    "repetition_penalty": 1.0, "length_penalty": 1.0, "no_repeat_ngram_size": 2, 
     # "renormalize_logits": True, 
     "low_memory": True,
     "num_return_sequences": beams, "output_scores": True, "return_dict_in_generate": True,
@@ -79,13 +81,11 @@ gen_config = {
 
 from time import perf_counter
 
-all_embeds = []
 all_pairs = []
 all_sentences = []
 all_errors = []
 all_words = []
 all_scores = []
-# all_log_probs = []
 time_b = 0.
 time_c = 0.
 for i, (model_inputs, prompt_inputs, sentence, true_ph, pred_ph) in tqdm(enumerate(test_dataloader)):
@@ -95,42 +95,48 @@ for i, (model_inputs, prompt_inputs, sentence, true_ph, pred_ph) in tqdm(enumera
     b = perf_counter()
     time_b += b-a 
     dec_preds = [tokenizer.decode(p.detach().cpu().squeeze(), skip_special_tokens=True) for i, p in enumerate(preds.sequences)]
-    print(dec_preds)
-    scores = torch.zeros(len(preds)) #preds.sequences_scores
+    # print(dec_preds)
+    scores = preds.sequences_scores if "sequences_scores" in dir(preds) else torch.zeros(len(preds))
     scores = (scores-scores.mean())/scores.std()
     pairs = sorted([(a.item(), b) for a,b in zip(scores, dec_preds)], key=lambda x: -x[0])
-    # print(sentence)
-    # for pair in pairs:
-    #     print(pair[0], pair[1])
+    print(sentence)
+    for pair in pairs:
+        print(pair[0], pair[1])
     errors, words = word_error_count(pairs[0][1], sentence)
     all_errors.append(errors)
     all_words.append(words)
     all_pairs.append(pairs)
-    all_sentences.append(sentence)
+    all_sentences += sentence
     all_scores.append(scores.tolist())
     c = perf_counter()
     time_c += c-b
 
 
 print(time_b, time_c)
-# torch.save({"errors": all_errors, "words": all_words, "pairs": all_pairs, "sentences": [s for [s] in all_sentences], "scores": all_scores}, "data.pth")
+torch.save({"errors": all_errors, "words": all_words, "pairs": all_pairs, "sentences": all_sentences, "scores": all_scores}, f"data{beams}.pth")
 
 
-# llama_errors = 0
-# llama_words = 0
-# for s, p in zip(sentences, pairs):
-#     best = 100
-#     best_pred = None
-#     for ex in p:   
-#         errors, words = word_error_count(ex[1].strip(), s.strip())    
-#         if errors < best:
-#             best = errors
-#             best_pred = ex[1]
-#     llama_errors += best
-#     llama_words += words
-#     print(s, best_pred, best)
+d = torch.load("data3.pth")
+all_sentences = d["sentences"]
+all_pairs = d["pairs"]
+llama_errors = 0
+llama_words = 0
+a=0
+b=64
+for s, p in zip(all_sentences[a:b], all_pairs[a:b]):
+    best = 100
+    best_pred = None
+    for ex in p:   
+        errors, words = word_error_count(ex[1].strip(), s.strip())    
+        if errors < best:
+            best = errors
+            best_pred = ex[1]
+    llama_errors += best
+    llama_words += words
+    print(s," // ", best_pred, best)
 
-# llama_errors/llama_words
+
+llama_errors/llama_words
 
 # ngram_errors = 0
 # ngram_words = 0

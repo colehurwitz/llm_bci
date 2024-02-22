@@ -2,7 +2,7 @@ seed: 1
 
 savestring: poisson-pretrain  
 wandb_project: itransformer
-data_file: competitionData/spiking_data.pth
+log_to_wandb: false
 
 verbosity: 0
 
@@ -22,18 +22,39 @@ method:
     use_lograte: true
     loss: mse   # poisson_nll
 
+
+data:
+  data_dir: /home/gridsan/dbeneto/MAML-Soljacic_shared/BCI/data/competitionData
+  zscore: True
+
   dataset_kwargs:
     vocab_file: vocab.json
 
-dataset:
-  data_dir: /home/gridsan/dbeneto/MAML-Soljacic_shared/BCI/data/competitionData
-  zscore: True
+  dataloader_kwargs:
+    prompt_keys: null
+    pad_dict:
+      spikes:
+        dim: 0
+        value: 0
+      targets:
+        dim: 0
+        value: 0
+      
 
 trainer:
   train_name: train
   test_name: test
   train_len: null # null to use all
   test_len: null
-
+  shuffle_test_dataloader: false
+  
+  
 optimizer:
-  gradient_accumulation_steps: 2
+  gradient_accumulation_steps: 4
+  lr: 1.e-4
+  wd: 0.01
+  eps: 1.e-8
+  warmup_pct: 0.0 # cosine/linear
+  gamma: 0.95     # step
+  div_factor: 10  # cosine
+  scheduler: step # step/cosine/linear

@@ -1,21 +1,24 @@
 import os
-import inspect
 import wandb 
+import json
+import inspect
 from tqdm import tqdm
 
 from dataclasses import dataclass
 from typing import Optional
 
 import torch
+from torch import nn
 from torch.utils.tensorboard import SummaryWriter
 from torch.utils.data import DataLoader
 from torch.optim.lr_scheduler import OneCycleLR, StepLR
 
 from transformers import get_linear_schedule_with_warmup
+from datasets import load_dataset
 from accelerate import Accelerator
 
 from utils.config_utils import DictConfig, config_from_kwargs
-from utils.dataset import pad_collate_fn
+from dataset.dataset import SpikingDataset, SpikingDatasetForCTC, pad_collate_fn
 
 
 @dataclass
@@ -26,43 +29,44 @@ class ModelOutput():
         return {k: getattr(self, k) for k in self.__dataclass_fields__.keys()}
 
 
+METHOD2DATASET = {"ssl": SpikingDataset, "ctc": SpikingDatasetForCTC}
+# NAME2MODEL = {"iTransformer": iTransformer, "PatchTST": PatchTSTForSpikingActivity}
+NAME2MODEL = {"PatchTST": PatchTSTForSpikingActivity}
+
 class Trainer():
 
     def __init__(
         self,
-        model: nn.Module,
-        dataset: Dict[List[Any]],
-        metric_fns: Optional[Dict[Callable]] = None,
-        eval_metric_fns: Optional[Dict[Callable]] = None,
-        config: DictConfig,
-    ):
-        
-        self.model = model
-        self.dataset = dataset
-        self.metric_fns = metric_fns if metric_fns else {}
-        self.eval_metric_fns = eval_metric_fns if eval_metric_fns else {}
-
-        # Set config
+        config:             DictConfig,
+        model:              Optional[nn.Module]         = None,
+        dataset:            Optional[Union[str,Dict[List[Any]]]]   = None,
+        metric_fns:         Optional[Dict[Callable]]    = None,
+        eval_metric_fns:    Optional[Dict[Callable]]    = None,
+    ):  
         self.config = config
-        self.savestring = config.savestring
-
+        self.reset_seeds(config.seed)
+        self.verbosity = config.verbosity
+        
         self.accelerator = Accelerator(
             step_scheduler_with_optimizer=config.optimizer.scheduler in ["linear","cosine"], 
             split_batches=True,
             gradient_accumulation_steps=config.optimizer.gradient_accumulation_steps
         )
-        
-        self.verbosity = config.verbosity
-        self.reset_seeds(config.seed)
-        self.prepare_logging()
-        
-        self.set_model_inputs()
 
-        self.build_dataloaders()
+        self.prepare_logging()
+
+        self.set_model(model)
+        self.get_model_inputs()
+
+        self.set_dataset(dataset)
+        self.build_dataloaders()        
 
         self.build_optimizer_and_scheduler()
 
         self.prepare_for_distributed_training()
+        
+        self.metric_fns = metric_fns if metric_fns else {}
+        self.eval_metric_fns = eval_metric_fns if eval_metric_fns else {}
         
 
     """ Print messages with the appropriate level of verbosity
@@ -85,13 +89,52 @@ class Trainer():
         # torch.backends.cudnn.deterministic=True
         # torch.backends.cudnn.benchmark = False
 
-    
+
+    """ Load dataset from configuration. It can be a dataset object, the path to a json file
+        or the name of a huggingface dataset
+    """
+    def set_dataset(self, dataset):
+        if dataset is None:
+            # Load dataset from configuration
+            if self.config.dataset.hf_dataset_name:
+                self.print_v(f"Loading hf dataset {self.config.hf_dataset_name}")
+                self.dataset = load_dataset(self.config.dataset.hf_dataset_name)
+            elif self.config.dataset.json_dataset_name:
+                self.print_v(f"Loading dataset from json file {self.config.json_dataset_name}")
+                self.dataset = json.load(open(self.config.dataset.json_dataset_name,"r"))
+            else:
+                raise Exception("No dataset provided")
+        elif isinstance(dataset, str):
+            try:
+                self.dataset = load_dataset(dataset)
+                self.print_v(f"Loading hf dataset {dataset}")
+            except:
+                try:
+                    self.dataset = json.load(open(dataset,"r"))
+                    self.print_v(f"Loading dataset from json file {dataset}")
+                except:
+                    raise Exception("Can't load dataset from provided path or name")
+        else:
+            self.dataset = dataset
+
+   
+    """ Set or build model. Model can be a nn.Module or None. In the second case it will be loaded from the configuration.
+    """
+    def set_model(self, model):
+        if isinstance(model, nn.Module):
+            self.model = model
+        else:
+            # Load model from configuration
+            model_class = NAME2MODEL[self.config.model.name]    # Get class from name
+            self.model = model_class(self.config.model, **self.config.method.model_kwargs)
+
+
     """ Get the used columns of the dataset
     """
-    def set_model_inputs(self):
+    def get_model_inputs(self):
 
         model_to_inspect = self.model
-        if if getattr(self.model, "peft_type", None) is not None:
+        if getattr(self.model, "peft_type", None) is not None:
             if hasattr(self.model, "get_base_model"):
                 model_to_inspect = self.model.get_base_model()
             else:
@@ -103,6 +146,7 @@ class Trainer():
     """ Create checkpoint dirs, build tensorboard logger and prepare wandb run
     """
     def prepare_logging(self):
+        self.savestring = config.savestring
         self.checkpoint_dir = os.path.join(self.config.dirs.checkpoint_dir,self.savestring)
         if not os.path.exists(self.checkpoint_dir) and self.accelerator.is_main_process:
             os.makedirs(self.checkpoint_dir)
@@ -119,15 +163,17 @@ class Trainer():
     """
     def build_dataloaders(self):
         self.print_v("Building dataloaders", verbosity=0)
-        train_dataset = SpikingDataset(self.dataset[config.trainer.train_name], config.trainer.train_len, config.method.name, **config.data.dataset_kwargs)
-        test_dataset = SpikingDataset(self.dataset[config.trainer.test_name], config.trainer.test_len, config.method.name, **config.data.dataset_kwargs)
+        # Get name of Dataset class
+        dataset_class = METHOD2DATASET[config.method.dataset_kwargs.dataset_name]
+        train_dataset = dataset_class(self.dataset[config.trainer.train_name], config.trainer.train_len, config.method.name, **config.method.dataset_kwargs)
+        test_dataset = dataset_class(self.dataset[config.trainer.test_name], config.trainer.test_len, config.method.name, **config.method.dataset_kwargs)
 
         self.train_dataloader = DataLoader(
-            train_dataset, shuffle=True, collate_fn=partial(pad_collate_fn, model_inputs=self.model_inputs, **config.data.dataloader_kwargs), batch_size=config.trainer.train_batch_size, pin_memory=True, drop_last=True,
+            train_dataset, shuffle=True, collate_fn=partial(pad_collate_fn, model_inputs=self.model_inputs, **config.method.dataloader_kwargs), batch_size=config.trainer.train_batch_size, pin_memory=True, drop_last=True,
         )
-        self.test_dataloader = DataLoader(
-            test_dataset, shuffle=config.trainer.shuffle_test_dataloader, collate_fn=collate_fn=partial(pad_collate_fn, model_inputs=self.model_inputs, **config.data.dataloader_kwargs), batch_size=config.trainer.test_batch_size, pin_memory=True, drop_last=True,
-        )
+
+
+        self.test_dataloader = DataLoader(test_dataset)#, shuffle=config.trainer.shuffle_test_dataloader, collate_fn=collate_fn=partial(pad_collate_fn, model_inputs=self.model_inputs, **config.method.dataloader_kwargs))#, batch_size=config.trainer.test_batch_size, pin_memory=True, drop_last=True)
 
 
     """ Create optimzier and learning rate scheduler
@@ -201,7 +247,7 @@ class Trainer():
 
             # Metrics
             for name, fn in metric_fns.items():
-                test_metrics[name].append(self.accelerator.gather(self.model, model_inputs, unused_inputs, outputs.to_dict())).sum().detach().item())
+                test_metrics[name].append(self.accelerator.gather(self.model, model_inputs, unused_inputs, outputs.to_dict()).sum().detach().item())
 
 
         test_avg_loss = sum(test_loss) / sum(test_examples)

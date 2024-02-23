@@ -1,18 +1,23 @@
 
 from typing import Optional
-# from models.itransformer import iTransformer
-from models.patchtst import PatchTSTForSpikingActivity
-from utils.dataset import load_competition_data
+from dataset.speechbci_dataset import load_competition_data, create_phonemes_ctc_labels
 from utils.config_utils import config_from_kwargs, update_config
+from models.trainer import Trainer
 
-# STR2MODEL = {"iTransformer": iTransformer, "PatchTST": PatchTSTForSpikingActivity}
-STR2MODEL = {"PatchTST": PatchTSTForSpikingActivity}
+from importlib import reload as rl
+
+
 DEFAULT_TRAINER_CONFIG = "configs/trainer.yaml"
 
 config_file: Optional[str] = None
 config = update_config(DEFAULT_TRAINER_CONFIG, config_file) 
 # config = update_config(config, config_from_kwargs(kwargs))
 
-model_class = STR2MODEL[config.model.name]
-model = model_class(config.model)
-dataset = load_competition_data(config.data.data_dir, config.data.dataset_kwargs)
+dataset = load_competition_data(config.data.data_dir, config.data.zscore)
+if config.method.model_kwargs.method_name == "ctc":
+    dataset = create_phonemes_ctc_labels(dataset, config.data.vocab_file)
+
+def metric_1(model, model_inputs, unused_inputs, outputs):
+    return 0
+
+trainer = Trainer(config, dataset=dataset, metric_fns=[metric_1])

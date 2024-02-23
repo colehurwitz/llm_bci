@@ -116,7 +116,9 @@ print(time_b, time_c)
 torch.save({"errors": all_errors, "words": all_words, "pairs": all_pairs, "sentences": all_sentences, "scores": all_scores}, f"data{beams}.pth")
 
 
-d = torch.load("data3.pth")
+import torch
+from utils.eval_utils import word_error_count
+d = torch.load("data5.pth")
 all_sentences = d["sentences"]
 all_pairs = d["pairs"]
 llama_errors = 0

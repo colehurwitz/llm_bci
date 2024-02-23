@@ -10,11 +10,19 @@ dirs:
   checkpoint_dir: /home/gridsan/dbeneto/TFG/BCI/pt_checkpoints
   log_dir: /home/gridsan/dbeneto/TFG/BCI/pt_logs
 
+## These two fields are not used in Trainer
 model: include:configs/patchtst.yaml
+dataset:
+  hf_dataset_name: null
+  json_dataset_name: null
+  dir: /home/gridsan/dbeneto/MAML-Soljacic_shared/BCI/data/competitionData
+  zscore: True
+  vocab_file: vocab.json
+## 
 
-method: 
+method:
   model_kwargs:
-    method_name: sft     # ssl
+    method_name: ctc     # ssl
     vocab_size: 41
     blank_id: 0
     zero_infinity: false
@@ -22,13 +30,9 @@ method:
     use_lograte: true
     loss: mse   # poisson_nll
 
-
-data:
-  data_dir: /home/gridsan/dbeneto/MAML-Soljacic_shared/BCI/data/competitionData
-  zscore: True
-
   dataset_kwargs:
-    vocab_file: vocab.json
+    dataset_name: ctc
+    target_name: phonemes
 
   dataloader_kwargs:
     pad_dict:
@@ -38,7 +42,6 @@ data:
       targets:
         dim: 0
         value: 0
-      
 
 trainer:
   train_name: train
@@ -46,7 +49,6 @@ trainer:
   train_len: null # null to use all
   test_len: null
   shuffle_test_dataloader: false
-
   
 optimizer:
   gradient_accumulation_steps: 4

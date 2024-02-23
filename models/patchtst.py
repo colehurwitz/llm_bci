@@ -148,7 +148,7 @@ class PretrainHead(nn.Module):
         return self.post_proj(output)   # (bs, num_input_channels, num_patches, patch_size)
 
 
-METHOD2HEAD = {"sft": PredictHead, "ssl": PretrainHead}
+METHOD2HEAD = {"ctc": PredictHead, "ssl": PretrainHead}
 
 class PatchTSTForSpikingActivity(nn.Module):
 
@@ -192,7 +192,7 @@ class PatchTSTForSpikingActivity(nn.Module):
         # Build loss function
         if self.method == "ssl":
             self.loss_fn = nn.PoissonNLLLoss(reduction="none", log_input=kwargs["use_lograte"])
-        elif self.method == "sft":
+        elif self.method == "ctc":
             self.loss_fn = nn.CTCLoss(reduction="none", blank=kwargs["blank_id"], zero_infinity=kwargs["zero_infinity"])
 
 
@@ -214,7 +214,7 @@ class PatchTSTForSpikingActivity(nn.Module):
         if self.method == "ssl":
             loss = (self.loss_fn(outputs, patch_input) * mask).sum()
             n_examples = mask.sum()
-        elif self.method == "sft":
+        elif self.method == "ctc":
             loss = self.loss(logits.transpose(0,1), targets, targets_lenghts=targets_lenghts)
             n_examples = torch.Tensor(len(targets)).to(loss.device, torch.long)
 

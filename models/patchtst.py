@@ -8,7 +8,7 @@ from transformers import PatchTSTConfig, PatchTSTModel
 from transformers.activations import ACT2FN
 ACT2FN["softsign"] = nn.Softsign
 
-from models.trainer import ModelOutput
+from models.model_output import ModelOutput
 from utils.config_utils import update_config, DictConfig
 
 
@@ -191,19 +191,22 @@ class PatchTSTForSpikingActivity(nn.Module):
 
         # Build loss function
         if self.method == "ssl":
-            self.loss_fn = nn.PoissonNLLLoss(reduction="none", log_input=kwargs["use_lograte"])
+            if kwargs["loss"] == "poisson_nll":
+                self.loss_fn = nn.PoissonNLLLoss(reduction="none", log_input=kwargs["use_lograte"])
+            else:   
+                raise Exception(f"Loss {kwargs['loss']} not implemented yet for ssl")
         elif self.method == "ctc":
             self.loss_fn = nn.CTCLoss(reduction="none", blank=kwargs["blank_id"], zero_infinity=kwargs["zero_infinity"])
 
 
     def forward(
         self,
-        x: torch.LongTensor,                                # (bs, seq_len, n_input_channels)
+        spikes: torch.LongTensor,                           # (bs, seq_len, n_input_channels)
         targets: Optional[torch.Tensor] = None,             # (bs, seq_len)
-        targets_lenghts: Optional[torch.LongTensor] = None, # (bs)
+        targets_lengths: Optional[torch.LongTensor] = None, # (bs)
     ) -> PatchTSTOutput:
 
-        outputs = self.encoder(x)   
+        outputs = self.encoder(spikes)   
         mask = outputs.mask
         patch_input = outputs.patch_input      
         embedding = outputs.last_hidden_state   # (bs, n_input_channels, num_patches, d_model)
@@ -215,7 +218,7 @@ class PatchTSTForSpikingActivity(nn.Module):
             loss = (self.loss_fn(outputs, patch_input) * mask).sum()
             n_examples = mask.sum()
         elif self.method == "ctc":
-            loss = self.loss(logits.transpose(0,1), targets, targets_lenghts=targets_lenghts)
+            loss = self.loss_fn(logits.transpose(0,1), targets, target_lengths=targets_lengths)
             n_examples = torch.Tensor(len(targets)).to(loss.device, torch.long)
 
         return PatchTSTOutput(

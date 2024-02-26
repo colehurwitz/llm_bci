@@ -1,4 +1,4 @@
-name: PatchTST
+model_class: PatchTST
 
 encoder:
   from_pt: null

@@ -2,61 +2,81 @@ import os
 import wandb 
 import json
 import inspect
+from functools import partial
 from tqdm import tqdm
 
-from dataclasses import dataclass
-from typing import Optional
+
+from typing import Optional, Union, Dict, List, Any, Callable
 
 import torch
 from torch import nn
 from torch.utils.tensorboard import SummaryWriter
 from torch.utils.data import DataLoader
 from torch.optim.lr_scheduler import OneCycleLR, StepLR
-
 from transformers import get_linear_schedule_with_warmup
-from datasets import load_dataset
+
+
 from accelerate import Accelerator
+from datasets import load_dataset
 
-from utils.config_utils import DictConfig, config_from_kwargs
-from dataset.dataset import SpikingDataset, SpikingDatasetForCTC, pad_collate_fn
-
-
-@dataclass
-class ModelOutput():
-    loss: Optional[torch.FloatTensor] = None
-    n_examples: Optional[torch.LongTensor] = None
-    def to_dict(self):
-        return {k: getattr(self, k) for k in self.__dataclass_fields__.keys()}
+from utils.config_utils import DictConfig, config_from_kwargs, update_config
+from data_utils.datasets import SpikingDataset, SpikingDatasetForCTC, pad_collate_fn
+from models.patchtst import PatchTSTForSpikingActivity
 
 
-METHOD2DATASET = {"ssl": SpikingDataset, "ctc": SpikingDatasetForCTC}
-# NAME2MODEL = {"iTransformer": iTransformer, "PatchTST": PatchTSTForSpikingActivity}
+""" Mapping from dataset class names to dataset class. New dataset classes should be registered here
+"""
+NAME2DATASET = {"ssl": SpikingDataset, "ctc": SpikingDatasetForCTC}
+
+""" Mapping from model class names to model class. New model classes should be registered here
+"""
 NAME2MODEL = {"PatchTST": PatchTSTForSpikingActivity}
 
+""" Base configuration for the Trainer. 
+"""
+DEFAULT_TRAINER_CONFIG = "configs/trainer.yaml"
+def default_trainer_config():
+    return update_config(DEFAULT_TRAINER_CONFIG, None)
+
+
+
+""" Trainer class. 
+    INPUTS
+        config: configuration object. Updates DEFAULT_TRAINER_CONFIG
+        model: can be a ``nn.Module``. If it is not provided, it will be loaded form the configuration
+        dataset: can be a file path, hf dataset name or a ``dict`` with split keys. Each split is a 
+        ``list`` of examples, where each example is a ``dict``. If it is not provided, it will be 
+        loaded from the configuration.
+        metric_fns: ``dict`` of metric functions to be used during training and evaluation. Metric 
+        functions receive as input the model, model inputs, unused inputs and model outputs, and should
+        return a ``torch.Tensor`` which will be averaged across all devices.
+        eval_metric_fns: ``dict`` of additional functions to be used during evaluation
+"""
 class Trainer():
 
     def __init__(
         self,
         config:             DictConfig,
         model:              Optional[nn.Module]         = None,
-        dataset:            Optional[Union[str,Dict[List[Any]]]]   = None,
-        metric_fns:         Optional[Dict[Callable]]    = None,
-        eval_metric_fns:    Optional[Dict[Callable]]    = None,
+        dataset:            Optional[Union[str,Dict[str,List[Dict[str,Any]]]]]   = None,
+        metric_fns:         Optional[Dict[str,Callable]]    = None,
+        eval_metric_fns:    Optional[Dict[str,Callable]]    = None,
     ):  
-        self.config = config
-        self.reset_seeds(config.seed)
+        self.config = update_config(default_trainer_config(), config) 
         self.verbosity = config.verbosity
-        
+        self.init_wandb()
+        self.reset_seeds()
+
+        # Used for distributed training
         self.accelerator = Accelerator(
             step_scheduler_with_optimizer=config.optimizer.scheduler in ["linear","cosine"], 
             split_batches=True,
-            gradient_accumulation_steps=config.optimizer.gradient_accumulation_steps
         )
 
         self.prepare_logging()
 
         self.set_model(model)
-        self.get_model_inputs()
+        self.get_model_inputs()     # Used by the dataloader to provide only the keys used by the model
 
         self.set_dataset(dataset)
         self.build_dataloaders()        
@@ -74,37 +94,86 @@ class Trainer():
         1: TRAINING LOOP
         2: NOTHING
     """
-    @staticmethod
-    def print_v(*args, verbosity=3):
+    def print_v(self, *args, verbosity=3):
         if verbosity >= self.verbosity:
-            accelerator.print(*args)
+            self.accelerator.print(*args)
 
+
+    """ Initialize wandb run. Update config with wandb configration for hyperparameter sweeps.
+    """
+    def init_wandb(self):
+        if self.config.log_to_wandb:
+            self.wandb_run = wandb.init(self.config.wandb_project)
+            self.config = update_config(self.config, config_from_kwargs(wandb.config, convert=False))
+        
 
     """ Set seeds for reproducibility
     """
-    @staticmethod
-    def reset_seeds(seed):
-        torch.manual_seed(seed)
-        torch.cuda.manual_seed(seed)
+    def reset_seeds(self):
+        torch.manual_seed(self.config.seed)
+        torch.cuda.manual_seed(self.config.seed)
         # torch.backends.cudnn.deterministic=True
         # torch.backends.cudnn.benchmark = False
 
 
-    """ Load dataset from configuration. It can be a dataset object, the path to a json file
-        or the name of a huggingface dataset
+    """ Create checkpoint dirs, build tensorboard logger.
+    """
+    def prepare_logging(self):
+        self.savestring = self.config.savestring
+        self.checkpoint_dir = os.path.join(self.config.dirs.checkpoint_dir,self.savestring)
+        if not os.path.exists(self.checkpoint_dir) and self.accelerator.is_main_process:
+            os.makedirs(self.checkpoint_dir)
+        
+        log_dir = os.path.join(self.config.dirs.log_dir,self.config.savestring)
+        self.writer = SummaryWriter(log_dir=log_dir)
+
+   
+    """ Set or build model.
+        INPUTS
+            model: Can be a nn.Module. If it is None, it will be loaded from the configuration.
+    """
+    def set_model(self, model):
+        if model is None:
+            # Load model from configuration
+            model_class = NAME2MODEL[self.config.model.model_class]    # Get class from name
+            self.model = model_class(self.config.model, **self.config.method.model_kwargs)
+        else:
+            self.model = model
+            
+
+    """ Get the used columns of the dataset
+    """
+    def get_model_inputs(self):
+
+        model_to_inspect = self.model
+        # Access base model in case of a loaded peft adapter
+        if getattr(self.model, "peft_type", None) is not None:
+            if hasattr(self.model, "get_base_model"):
+                model_to_inspect = self.model.get_base_model()
+            else:
+                model_to_inspect = self.model.base_model.model
+        signature = inspect.signature(model_to_inspect.forward)
+        self.model_inputs = list(signature.parameters.keys())
+        
+
+    """ Load dataset.
+        INPUTS: 
+            dataset: Can be a dataset object, the path to a json file or the name of a huggingface 
+            dataset. If it is None, it will be loaded from configuration.
     """
     def set_dataset(self, dataset):
         if dataset is None:
             # Load dataset from configuration
-            if self.config.dataset.hf_dataset_name:
+            if self.config.data.hf_dataset_name:
                 self.print_v(f"Loading hf dataset {self.config.hf_dataset_name}")
-                self.dataset = load_dataset(self.config.dataset.hf_dataset_name)
-            elif self.config.dataset.json_dataset_name:
+                self.dataset = load_dataset(self.config.data.hf_dataset_name)
+            elif self.config.data.json_dataset_name:
                 self.print_v(f"Loading dataset from json file {self.config.json_dataset_name}")
-                self.dataset = json.load(open(self.config.dataset.json_dataset_name,"r"))
+                self.dataset = json.load(open(self.config.data.json_dataset_name,"r"))
             else:
                 raise Exception("No dataset provided")
         elif isinstance(dataset, str):
+            # Load dataset from file or hf name
             try:
                 self.dataset = load_dataset(dataset)
                 self.print_v(f"Loading hf dataset {dataset}")
@@ -117,94 +186,56 @@ class Trainer():
         else:
             self.dataset = dataset
 
-   
-    """ Set or build model. Model can be a nn.Module or None. In the second case it will be loaded from the configuration.
-    """
-    def set_model(self, model):
-        if isinstance(model, nn.Module):
-            self.model = model
-        else:
-            # Load model from configuration
-            model_class = NAME2MODEL[self.config.model.name]    # Get class from name
-            self.model = model_class(self.config.model, **self.config.method.model_kwargs)
 
-
-    """ Get the used columns of the dataset
-    """
-    def get_model_inputs(self):
-
-        model_to_inspect = self.model
-        if getattr(self.model, "peft_type", None) is not None:
-            if hasattr(self.model, "get_base_model"):
-                model_to_inspect = self.model.get_base_model()
-            else:
-                model_to_inspect = self.model.base_model.model
-        signature = inspect.signature(model_to_inspect.forward)
-        self.model_inputs = list(signature.parameters.keys())
-        
-
-    """ Create checkpoint dirs, build tensorboard logger and prepare wandb run
-    """
-    def prepare_logging(self):
-        self.savestring = config.savestring
-        self.checkpoint_dir = os.path.join(self.config.dirs.checkpoint_dir,self.savestring)
-        if not os.path.exists(self.checkpoint_dir) and self.accelerator.is_main_process:
-            os.makedirs(self.checkpoint_dir)
-        
-        log_dir = os.path.join(self.config.dirs.log_dir,self.config.savestring)
-        self.writer = SummaryWriter(log_dir=log_dir)
-
-        if self.config.log_to_wandb:
-            self.wandb_run = wandb.init(self.config.wandb_project)
-            self.config = update_config(self.config, config_from_kwargs(wandb.config, convert=False))
-        
 
     """ Create train and test dataloaders
     """
     def build_dataloaders(self):
         self.print_v("Building dataloaders", verbosity=0)
         # Get name of Dataset class
-        dataset_class = METHOD2DATASET[config.method.dataset_kwargs.dataset_name]
-        train_dataset = dataset_class(self.dataset[config.trainer.train_name], config.trainer.train_len, config.method.name, **config.method.dataset_kwargs)
-        test_dataset = dataset_class(self.dataset[config.trainer.test_name], config.trainer.test_len, config.method.name, **config.method.dataset_kwargs)
+        dataset_class = NAME2DATASET[self.config.data.dataset_class]
+        self.train_dataset = dataset_class(self.dataset[self.config.data.train_name], self.config.data.train_len, **self.config.method.dataset_kwargs)
+        self.test_dataset = dataset_class(self.dataset[self.config.data.test_name], self.config.data.test_len, **self.config.method.dataset_kwargs)
 
+        # ToDo Custom DataLoaders?
         self.train_dataloader = DataLoader(
-            train_dataset, shuffle=True, collate_fn=partial(pad_collate_fn, model_inputs=self.model_inputs, **config.method.dataloader_kwargs), batch_size=config.trainer.train_batch_size, pin_memory=True, drop_last=True,
+            self.train_dataset, shuffle=True, collate_fn=partial(pad_collate_fn, model_inputs=self.model_inputs, **self.config.method.dataloader_kwargs), batch_size=self.config.training.train_batch_size, pin_memory=True, drop_last=True,
         )
 
-
-        self.test_dataloader = DataLoader(test_dataset)#, shuffle=config.trainer.shuffle_test_dataloader, collate_fn=collate_fn=partial(pad_collate_fn, model_inputs=self.model_inputs, **config.method.dataloader_kwargs))#, batch_size=config.trainer.test_batch_size, pin_memory=True, drop_last=True)
+        self.test_dataloader = DataLoader(
+            self.test_dataset, shuffle=self.config.training.shuffle_test_dataloader, collate_fn=partial(pad_collate_fn, model_inputs=self.model_inputs, **self.config.method.dataloader_kwargs), batch_size=self.config.training.test_batch_size, pin_memory=True, drop_last=True
+        )
 
 
     """ Create optimzier and learning rate scheduler
     """
     def build_optimizer_and_scheduler(self):
         self.print_v("Building optimizers", verbosity=0)
-        self.optimizer = torch.optim.AdamW(self.model.parameters(), lr=config.optimizer.lr, weight_decay=config.optimizer.wd, eps=config.optimizer.eps)
+        self.optimizer = torch.optim.AdamW(self.model.parameters(), lr=self.config.optimizer.lr, weight_decay=self.config.optimizer.wd, eps=self.config.optimizer.eps)
         # for pn, p in model.named_parameters():
         #     print(pn, p.requires_grad)
 
-        if config.optimizer.scheduler == "linear":
+        if self.config.optimizer.scheduler == "linear":
             self.lr_scheduler = get_linear_schedule_with_warmup(
                 optimizer=self.optimizer,
-                num_warmup_steps=round(config.optimizer.warmup_pct*config.trainer.num_epochs*len(train_dataloader)//config.optimizer.gradient_accumulation_steps),
-                num_training_steps=config.trainer.num_epochs*len(train_dataloader)//config.optimizer.gradient_accumulation_steps,
+                num_warmup_steps=round(self.config.optimizer.warmup_pct*self.config.training.num_epochs*len(self.train_dataloader)//self.config.optimizer.gradient_accumulation_steps),
+                num_training_steps=self.config.training.num_epochs*len(self.train_dataloader)//self.config.optimizer.gradient_accumulation_steps,
             )
-        elif config.optimizer.scheduler == "cosine":
+        elif self.config.optimizer.scheduler == "cosine":
             self.lr_scheduler = OneCycleLR(
                 optimizer=self.optimizer,
-                total_steps=config.trainer.num_epochs*len(train_dataloader)//config.optimizer.gradient_accumulation_steps,
-                max_lr=config.optimizer.lr,
-                pct_start=config.optimizer.warmup_pct,
-                div_factor=config.optimizer.div_factor,
+                total_steps=self.config.training.num_epochs*len(self.train_dataloader)//self.config.optimizer.gradient_accumulation_steps,
+                max_lr=self.config.optimizer.lr,
+                pct_start=self.config.optimizer.warmup_pct,
+                div_factor=self.config.optimizer.div_factor,
             )
-        elif config.optimizer.scheduler == "step":
+        elif self.config.optimizer.scheduler == "step":
             self.lr_scheduler = StepLR(
                 self.optimizer, 
                 step_size=1, 
-                gamma=config.optimizer.gamma)
+                gamma=self.config.optimizer.gamma)
         else:
-            raise Exception(f"Scheduler '{config.optimizer.scheduler}' not implemented")
+            raise Exception(f"Scheduler '{self.config.optimizer.scheduler}' not implemented")
 
 
     """ Accelerate method for distributed training
@@ -216,12 +247,16 @@ class Trainer():
     )
 
 
-    """ Evaluate the model with possible additional metric functions. Returns average test
-    loss and averaged metrics.
+    """ Evaluate the model with possible additional metric functions. 
+        INPUTS:
+            additional_metric_fns: dict of metric functions to use for evaluation apart from 
+            the training metric functions
+        OUTPUTS:
+            Averaged test loss and averaged metrics.
     """
     def evaluate(
         self,
-        additional_metric_fns: Optional[Dict[Callable]] = None,
+        additional_metric_fns: Optional[Dict[str,Callable]] = None,
     ):
         metric_fns = additional_metric_fns if additional_metric_fns else {}
         metric_fns.update(self.metric_fns)
@@ -233,13 +268,12 @@ class Trainer():
         
         model.eval()
 
-        for test_step, (model_inputs, unused_inputs) in enumerate(tqdm(self.test_dataloader) if verbosity <= 1 else self.test_dataloader):
+        for test_step, (model_inputs, unused_inputs) in enumerate(tqdm(self.test_dataloader) if self.verbosity <= 1 else self.test_dataloader):
             
             with torch.no_grad() as A, self.accelerator.no_sync(model) as B:
                 outputs = self.model(**model_inputs)
                 loss = outputs.loss
                 examples = outputs.n_examples
-
      
             # Loss
             test_loss.append(self.accelerator.gather(loss).sum().detach().item())
@@ -256,14 +290,14 @@ class Trainer():
         return test_avg_loss, test_avg_metrics
 
 
-    """ Training loop 
+    """ Training loop
     """
     def train(self):
         
         config = self.config
 
         self.print_v(f"Starting run {config.savestring} with config: ", verbosity=0)
-        self.print_v(self.trainer_config, verbosity=0) 
+        self.print_v(config, verbosity=0) 
 
         # Train
         global_step = 0
@@ -273,11 +307,11 @@ class Trainer():
         train_examples = []
         train_metrics = {name: [] for name in self.metric_fns.keys()}
 
-        for epoch in range(1, config.trainer.num_epochs+1):
+        for epoch in range(1, config.training.num_epochs+1):
             self.print_v(f"Epoch {epoch}", verbosity=1)
             self.model.train()
 
-            for step, (model_inputs, unused_inputs) in enumerate(tqdm(self.train_dataloader) if verbosity <= 1 else self.train_dataloader):
+            for step, (model_inputs, unused_inputs) in enumerate(tqdm(self.train_dataloader) if self.verbosity <= 1 else self.train_dataloader):
 
                 # Perform gradient accumulation
                 if (global_step + 1) % config.optimizer.gradient_accumulation_steps == 0:
@@ -290,7 +324,7 @@ class Trainer():
                         self.lr_scheduler.step()
                     self.optimizer.zero_grad()
                 else:
-                    with self.accelerator.no_sync(model):
+                    with self.accelerator.no_sync(self.model):
                         outputs = self.model(**model_inputs)
                         loss = outputs.loss
                         examples = outputs.n_examples
@@ -311,7 +345,7 @@ class Trainer():
 
 
                 # Evaluation condition
-                if (global_step + 1) % config.trainer.eval_every == 0:
+                if config.training.eval_every and (global_step + 1) % config.training.eval_every == 0:
 
                     self.print_v(f"Evaluation at step {global_step}", verbosity=1)
                     train_avg_loss, train_avg_metrics = self.evaluate(self.eval_metric_fns)
@@ -350,7 +384,7 @@ class Trainer():
                     model.train()     
 
                 # Save checkpoints
-                if (global_step + 1) % config.trainer.save_every == 0:
+                if config.training.save_every and (global_step + 1) % config.training.save_every == 0:
                     save_to_path = os.path.join(self.checkpoint_dir,f"STEP{global_step}")
                     if not os.path.exists(save_to_path) and accelerator.is_main_process:
                         os.makedirs(save_to_path)

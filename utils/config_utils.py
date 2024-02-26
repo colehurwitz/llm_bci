@@ -42,7 +42,7 @@ def update_config_rec(new_config, config):
             new_config = {}
         for field in config:
             if not field in new_config:
-                print(f"Creating new field {field}")
+                # print(f"Creating new field {field}")
                 new_config[field] = {}
             new_config[field] = update_config_rec(new_config[field], config[field])
     else:

@@ -11,7 +11,25 @@ import numpy as np
 from g2p_en import G2p
 
 
-""" Load competition data from ".mat" format
+""" Load competition data from ".mat" format.
+INPUTS
+    data_dir: directory to load the data from
+    zscore: wether to zscore the data by blocks
+    splits: name of the split subfolders
+    features: name of the features to extract
+    area_start: start index to extract features from a given area
+    area_end: end index to extract features from a given area
+OUTPUTS
+    A dictionary with splits as key. Each split key points to a list of examples. Each examples
+    is a subdict of the form
+    Dict {
+        spikes: np.ndarray of shape (seq_len, num_channels) containing neural data
+        sentence: str with the corresponding sentence
+        block: number of the block of experiment that corresponds to the example
+        date: date in which the data from the example was taken
+        block_idx: normalized index for block
+        date_idx: normalized index for date
+    }
 """
 def load_competition_data(
     data_dir:   str, 
@@ -84,15 +102,23 @@ def load_competition_data(
 
 
 """ Create fields phonemes and phonemes_idx for CTC training. This method does not 
-create a copy and modifies the passed dataset
+create a copy and modifies the passed dataset.
+INPUTS
+    dataset: dict with split keys. Each split is a list of examples. Each example is a dict.
+    vocab_file: json file that contains the vocabulary for CTC
+OUTPUTS
+    dataset: input dataset with added an added keys {
+        phonemes: phonemes corresponding to the sentence
+        phonemes_idx: phonemes indexed according to vocabulary
+    }
 """
 def create_phonemes_ctc_labels(
     dataset:    Dict[str,List[Dict[str,Any]]], 
     vocab_file: str,
 ) -> Dict[str,List[Dict[str,Any]]]:
 
-    g2p = G2p()
-    vocab = json.load(vocab_file,"r")
+    g2p = G2p() # graphme to phoneme processor
+    vocab = json.load(open(vocab_file,"r")) # vocab to create labels
 
     """Sentence to phonemes
     """
@@ -105,12 +131,13 @@ def create_phonemes_ctc_labels(
     def p_to_i(p: List[str]) -> List[int]:
         return [vocab.index(pp) for pp in p]
 
+    # Normalization of sentences
     punctuation = string.punctuation.replace("'","")
     for split in dataset:
         for i, row in enumerate(dataset[split]):
-            phonemes = numpy.asarray(self.s_to_p(row["sentence"].translate(str.maketrans("","",punctuation)).lower().strip()))
+            phonemes = np.asarray(s_to_p(row["sentence"].translate(str.maketrans("","",punctuation)).lower().strip()))
             dataset[split][i]["phonemes"] = phonemes
-            dataset[split][i]["phonemes_idx"] = numpy.asarray(self.p_to_i(phonemes))
+            dataset[split][i]["phonemes_idx"] = np.asarray(p_to_i(phonemes))
 
     return dataset
 

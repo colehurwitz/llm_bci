@@ -1,0 +1,77 @@
+seed: 1
+
+savestring: test
+wandb_project: test
+log_to_wandb: false
+
+verbosity: 0
+
+# Logging directories
+dirs:
+  checkpoint_dir: /home/gridsan/dbeneto/TFG/BCI/pt_checkpoints  # save model state dicts (todo optimizer states)
+  log_dir: /home/gridsan/dbeneto/TFG/BCI/pt_logs  # save tensorboard logs
+
+
+# Training configuration
+training:
+  num_epochs: 1
+  train_batch_size: 1
+  test_batch_size: 1        
+  shuffle_test_dataloader: false    # Shuffle test dataloader between epochs
+
+  save_every: null  # Save checkpoint
+  eval_every: null  # Eval model
+
+model: include:configs/patchtst.yaml
+
+data:
+  dataset_class: ctc
+
+  hf_dataset_name: null
+  json_dataset_name: null
+
+  train_name: train   # name of the train split in the raw datasete
+  test_name: test     # name of the test split in the raw datasete
+  train_len: null     # used length of the train dataset. null to use all
+  test_len: null      # used length of the test dataset. null to use all
+
+  dataset_dir: /home/gridsan/dbeneto/MAML-Soljacic_shared/BCI/data/competitionData
+  zscore: True
+  vocab_file: vocab.json
+
+method:
+
+  model_kwargs:
+    method_name: ctc     # ssl
+    vocab_size: 41
+    blank_id: 0
+    zero_infinity: false
+
+  dataset_kwargs:
+    target_name: phonemes
+
+  dataloader_kwargs:
+    pad_dict:
+      spikes:
+        dim: 0
+        side: right
+        value: 0
+        truncate: 200
+        min_length: 200
+      targets:
+        dim: 0
+        side: right
+        value: 0
+        truncate: null
+        min_length: null
+
+  
+optimizer:
+  gradient_accumulation_steps: 4
+  lr: 1.e-4
+  wd: 0.01
+  eps: 1.e-8
+  warmup_pct: 0.0 # cosine/linear
+  gamma: 0.95     # step
+  div_factor: 10  # cosine
+  scheduler: step # step/cosine/linear

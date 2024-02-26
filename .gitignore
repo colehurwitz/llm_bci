@@ -2,7 +2,7 @@
 .gitignore
 *.sh
 *paths.yaml
-logs
+*logs*
 bash_logs
 checkpoints
 pt_models

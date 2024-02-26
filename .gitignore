@@ -1,5 +1,8 @@
 # My files
 .gitignore
+sweep*
+pt_checkpoints
+TODO.txt
 *.sh
 *paths.yaml
 *logs*

@@ -139,6 +139,8 @@ class Trainer():
             self.model = model_class(self.config.model, **self.config.method.model_kwargs)
         else:
             self.model = model
+
+        self.print_v(f"Model number of trainabel parameters: {sum(p.numel() for p in self.model.parameters() if p.requires_grad):,}", verbosity=0)
             
 
     """ Get the used columns of the dataset
@@ -266,11 +268,11 @@ class Trainer():
         test_examples = []
         test_metrics = {name: [] for name in metric_fns.keys()}
         
-        model.eval()
+        self.model.eval()
 
         for test_step, (model_inputs, unused_inputs) in enumerate(tqdm(self.test_dataloader) if self.verbosity <= 1 else self.test_dataloader):
             
-            with torch.no_grad() as A, self.accelerator.no_sync(model) as B:
+            with torch.no_grad() as A, self.accelerator.no_sync(self.model) as B:
                 outputs = self.model(**model_inputs)
                 loss = outputs.loss
                 examples = outputs.n_examples
@@ -281,7 +283,7 @@ class Trainer():
 
             # Metrics
             for name, fn in metric_fns.items():
-                test_metrics[name].append(self.accelerator.gather(self.model, model_inputs, unused_inputs, outputs.to_dict()).sum().detach().item())
+                test_metrics[name].append(self.accelerator.gather(fn(self.model, model_inputs, unused_inputs, outputs.to_dict())).sum().detach().item())
 
 
         test_avg_loss = sum(test_loss) / sum(test_examples)
@@ -334,13 +336,13 @@ class Trainer():
                 # Loss
                 train_loss.append(self.accelerator.gather(loss).sum().detach().item())
                 train_examples.append(self.accelerator.gather(examples).sum().detach().item())
-                if accelerator.is_main_process:
+                if self.accelerator.is_main_process:
                     self.writer.add_scalar("Loss/train_iter",train_loss[-1] / train_examples[-1], global_step)
 
                 # Metrics
                 for name, fn in self.metric_fns.items():
                     train_metrics[name].append(self.accelerator.gather(fn(self.model, model_inputs, unused_inputs, outputs.to_dict())).sum().detach().item())
-                    if accelerator.is_main_process:
+                    if self.accelerator.is_main_process:
                         self.writer.add_scalar(f"{name}/train_iter",train_metrics[name][-1], global_step)
 
 
@@ -348,7 +350,7 @@ class Trainer():
                 if config.training.eval_every and (global_step + 1) % config.training.eval_every == 0:
 
                     self.print_v(f"Evaluation at step {global_step}", verbosity=1)
-                    train_avg_loss, train_avg_metrics = self.evaluate(self.eval_metric_fns)
+                    test_avg_loss, test_avg_metrics = self.evaluate(self.eval_metric_fns)
                     train_avg_loss = sum(train_loss) / sum(train_examples)
                     train_avg_metrics = {k: sum(v)/len(v) for k, v in train_metrics.items()}
                 
@@ -357,12 +359,12 @@ class Trainer():
                                   f"{test_avg_loss=} {test_avg_metrics=}", verbosity=1)  
 
                     # Log to tensorboard/wandb
-                    if accelerator.is_main_process:
+                    if self.accelerator.is_main_process:
                         self.writer.add_scalar("Loss/train",train_avg_loss,global_step)
-                        for k, v in train_avg_metrics:
+                        for k, v in train_avg_metrics.items():
                             self.writer.add_scalar(f"{name}/train", v, global_step)
-                        self.writer.add_scalar("Loss/test",test_epoch_loss,global_step)
-                        for k, v in test_avg_metircs:
+                        self.writer.add_scalar("Loss/test",test_avg_loss,global_step)
+                        for k, v in test_avg_metrics.items():
                             self.writer.add_scalar(f"{name}/test", v, global_step)
 
                     # Log to wandb
@@ -381,21 +383,21 @@ class Trainer():
                     train_metrics = {name: [] for name in self.metric_fns.keys()}
 
                     # End evaluation
-                    model.train()     
+                    self.model.train()     
 
                 # Save checkpoints
                 if config.training.save_every and (global_step + 1) % config.training.save_every == 0:
                     save_to_path = os.path.join(self.checkpoint_dir,f"STEP{global_step}")
-                    if not os.path.exists(save_to_path) and accelerator.is_main_process:
+                    if not os.path.exists(save_to_path) and self.accelerator.is_main_process:
                         os.makedirs(save_to_path)
 
                     self.print_v(f"Saving checkpoint at step {global_step} to {save_to_path}", verbosity=1)
                     self.model.save_checkpoint(save_to_path)
-                    if accelerator.is_main_process:
+                    if self.accelerator.is_main_process:
                         torch.save(dict(config), os.path.join(save_to_path,"trainer_config.pth"))
                         
-            
-            global_step += 1    
+                # Track step
+                global_step += 1    
 
             if config.optimizer.scheduler in ["step"]:
                 self.lr_scheduler.step()

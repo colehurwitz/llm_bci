@@ -14,13 +14,13 @@ dirs:
 
 # Training configuration
 training:
-  num_epochs: 1
-  train_batch_size: 1
-  test_batch_size: 1        
-  shuffle_test_dataloader: false    # Shuffle test dataloader between epochs
+  num_epochs: 100
+  train_batch_size: 32
+  test_batch_size: 32      
+  shuffle_test_dataloader: true    # Shuffle test dataloader between epochs
 
-  save_every: null  # Save checkpoint
-  eval_every: null  # Eval model
+  save_every: 1500 # Save checkpoint
+  eval_every: 250  # Eval model
 
 
 
@@ -38,7 +38,8 @@ data:
   test_len: null      # used length of the test dataset. null to use all
   
   dataset_dir: /home/gridsan/dbeneto/MAML-Soljacic_shared/BCI/data/competitionData
-
+  zscore: false
+  
 method:
 
   model_kwargs:
@@ -47,8 +48,8 @@ method:
     use_lograte: true
     loss: poisson_nll # mse/other distirbutions (todo)
 
-  dataset_kwargs:
-    dataset_name: ssl
+  dataset_kwargs: {}
+
 
   dataloader_kwargs:
     pad_dict:
@@ -60,11 +61,11 @@ method:
         min_length: 200
 
 optimizer:
-  gradient_accumulation_steps: 4
+  gradient_accumulation_steps: 1
   lr: 1.e-4
   wd: 0.01
   eps: 1.e-8
-  warmup_pct: 0.0 # cosine/linear
+  warmup_pct: 0.15 # cosine/linear
   gamma: 0.95     # step
   div_factor: 10  # cosine
-  scheduler: step # step/cosine/linear
+  scheduler: cosine # step/cosine/linear

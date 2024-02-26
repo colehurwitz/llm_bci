@@ -1,3 +1,4 @@
+import os
 from typing import List, Union, Optional
 from dataclasses import dataclass
 
@@ -105,7 +106,7 @@ class PretrainHead(nn.Module):
         self.num_input_channels = num_input_channels
         self.share_projection = config.share_projection
         self.mlp_decoder = config.mlp_decoder
-        self.use_lograte = config.use_lograte
+        self.use_lograte = kwargs["use_lograte"]
 
         self.dropout = nn.Dropout(config.head_dropout) if config.head_dropout > 0 else nn.Identity()
         if not self.share_projection:
@@ -210,18 +211,27 @@ class PatchTSTForSpikingActivity(nn.Module):
         mask = outputs.mask
         patch_input = outputs.patch_input      
         embedding = outputs.last_hidden_state   # (bs, n_input_channels, num_patches, d_model)
-        logits = self.decoder(embedding)        # (bs, num_patches, vocab_size) or (bs, num_input_channels, num_patches, patch_size)
+        preds = self.decoder(embedding)        # (bs, num_patches, vocab_size) or (bs, num_input_channels, num_patches, patch_size)
         
 
         # Compute the loss over unmasked outputs
         if self.method == "ssl":
-            loss = (self.loss_fn(outputs, patch_input) * mask).sum()
+            loss = (self.loss_fn(preds, patch_input) * mask.unsqueeze(-1).expand_as(preds)).sum()
             n_examples = mask.sum()
         elif self.method == "ctc":
-            loss = self.loss_fn(logits.transpose(0,1), targets, target_lengths=targets_lengths)
+            loss = self.loss_fn(preds.transpose(0,1), targets, target_lengths=targets_lengths)
             n_examples = torch.Tensor(len(targets)).to(loss.device, torch.long)
 
         return PatchTSTOutput(
             loss=loss,
             n_examples=n_examples,
         )
+
+
+    def save_checkpoint(self, save_dir):
+        torch.save(self.encoder.state_dict(), os.path.join(save_dir,"encoder.bin"))
+        torch.save(self.decoder.state_dict(), os.path.join(save_dir,"decoder.bin"))
+
+    def load_checkpoint(self, load_dir):
+        self.encoder.load_state_dict(torch.load(os.path.join(save_dir,"encoder.bin")))
+        self.decoder.load_state_dict(torch.load(os.path.join(save_dir,"decoder.bin")))

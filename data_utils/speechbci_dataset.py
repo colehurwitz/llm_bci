@@ -38,6 +38,7 @@ def load_competition_data(
     features:   Optional[List[str]] = ["tx1","spikePow"], 
     area_start: Optional[int]       = 0, 
     area_end:   Optional[int]       = 128,
+    **kwargs,
 ) -> Dict[str,List[Dict[str,Any]]]:
 
     """ Extract neural data from files into dict. Returns the spikes data, the date and the
@@ -72,7 +73,7 @@ def load_competition_data(
         y = np.concatenate(y)
         b = (np.concatenate(b).squeeze() - 1).tolist()    # translate to start at 0
         return [{
-            "spikes":  x_i,   
+            "spikes":  x_i.astype(np.float32),   
             "sentence": y_i,
             "block": b_i,
             "date": d_i,

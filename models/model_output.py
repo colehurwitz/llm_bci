@@ -12,5 +12,6 @@ examples over a series of calls to the model.
 class ModelOutput():
     loss: Optional[torch.FloatTensor] = None
     n_examples: Optional[torch.LongTensor] = None
+    
     def to_dict(self):
         return {k: getattr(self, k) for k in self.__dataclass_fields__.keys()}

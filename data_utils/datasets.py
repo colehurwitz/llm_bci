@@ -65,6 +65,7 @@ class SpikingDatasetForCTC(SpikingDataset):
         targets = self.dataset[idx][f"{self.target_name}_idx"]
         return {
             "spikes":   self.dataset[idx]["spikes"],    # (seq_len, num_channels)
+            "spikes_lengths": np.asarray(self.dataset[idx]["spikes"].shape[0]) # (1)
             "targets":  targets,                        # (seq_len)
             "targets_lengths": np.asarray(len(targets)) # (1)
         }

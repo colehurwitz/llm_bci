@@ -19,7 +19,8 @@ DEFAULT_CONFIG = "configs/patchtst.yaml"
 @dataclass
 class PatchTSTOutput(ModelOutput):
     loss: Optional[torch.FloatTensor] = None
-    logits: Optional[torch.FloatTensor] = None
+    n_examples: Optional[torch.LongTensor] = None
+    preds: Optional[torch.FloatTensor] = None
 
 class PredictHead(nn.Module):
 
@@ -168,20 +169,17 @@ class PatchTSTForSpikingActivity(nn.Module):
         if encoder_pt_path is not None:
             encoder_config = os.path.join(encoder_pt_path, "encoder_config.yaml")
             config["encoder"] = update_config(config.encoder, encoder_config)
-
         self.encoder = PatchTSTModel(PatchTSTConfig.from_dict(config.encoder))
-        
+
+        # Load encoder weights
         if encoder_pt_path is not None:
             self.encoder.load_state_dict(torch.load(os.path.join(encoder_pt_path,"encoder.bin")))
 
-
         # Build decoder
+        decoder_pt_path = config["decoder"].pop("from_pt", None)
         if config.decoder.from_pt is not None:
-            decoder_pt_path = config.decoder.from_pt
             decoder_config = os.path.join(decoder_pt_path , "decoder_config.yaml")
             config["decoder"] = update_config(config.decoder, decoder_config)
-        else:
-            decoder_pt_path = None
         decoder_class = METHOD2HEAD[self.method]
         self.decoder = decoder_class(config.decoder, config.encoder.num_input_channels, config.encoder.d_model, config.encoder.patch_length, **kwargs)
         
@@ -198,6 +196,8 @@ class PatchTSTForSpikingActivity(nn.Module):
                 raise Exception(f"Loss {kwargs['loss']} not implemented yet for ssl")
         elif self.method == "ctc":
             self.loss_fn = nn.CTCLoss(reduction="none", blank=kwargs["blank_id"], zero_infinity=kwargs["zero_infinity"])
+        else:   
+            raise Exception(f"Method {self.method} not implemented yet for PatchTST")
 
 
     def forward(
@@ -225,6 +225,7 @@ class PatchTSTForSpikingActivity(nn.Module):
         return PatchTSTOutput(
             loss=loss,
             n_examples=n_examples,
+            preds=preds,
         )
 
 

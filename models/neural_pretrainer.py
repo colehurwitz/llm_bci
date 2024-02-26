@@ -22,39 +22,6 @@ class NeuralPretrainerOutput(ModelOutput):
 
 class NeuralPretrainer(nn.Module):
 
-    def __init__(self, encoder: NeuralEncoder, config: DictConfig, vocab_size: int = None, blank_id: int = None):
-        super().__init__()
-
-
-        self.encoder = encoder
-        self.loss_type = config.loss.type
-        self.reduction = config.loss.reduction
-
-        if config.loss.type == "poisson":
-            n_outputs = encoder.config.embedder.n_channels
-        elif config.loss.type == "ctc":
-            n_outputs = vocab_size
-        else:
-            raise Exception(f"Loss {config.loss.type} not implemented")
-
-        # Build decoder
-        decoder_layers = []
-        decoder_layers.append(nn.Linear(self.encoder.out_proj.out_size, n_outputs))
-
-        if config.loss.type == "poisson" and not config.use_lograte:
-            decoder_layers.append(nn.ReLU()) # If we're not using lograte, we need to feed positive rates
-        if config.loss.type == "ctc":
-            decoder_layers.append(nn.LogSoftmax(dim=-1))  # CTC loss asks for log-softmax-normalized logits
-        self.decoder = nn.Sequential(*decoder_layers)
-
-        # Loss function
-        if config.loss.type == "poisson":
-            self.loss = nn.PoissonNLLLoss(reduction="none", log_input=config.use_lograte)
-        elif config.loss.type == "ctc":
-            self.loss = nn.CTCLoss(reduction="none", blank=blank_id, zero_infinity=config.zero_infinity)
-        
-
-
     def forward(
             self, 
             features:           torch.FloatTensor,  # (batch_size, fea_len, n_channels)

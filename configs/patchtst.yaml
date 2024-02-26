@@ -2,10 +2,10 @@ model_class: PatchTST
 
 encoder:
   from_pt: null
-  num_input_channels: 256
+  num_input_channels: 128
   context_length: 200
-  patch_length: 14
-  patch_stride: 4
+  patch_length: 5
+  patch_stride: 5
   num_hidden_layers: 3
   d_model: 128
   num_attention_heads: 16
@@ -25,7 +25,7 @@ encoder:
   positional_encoding_type: sincos
   # use_cls_token: False
   init_std: 0.02
-  scaling: "std"
+  scaling: null # std/mean/null
   do_mask_input: True
   mask_type: random
   random_mask_ratio: 0.4
@@ -38,7 +38,7 @@ decoder:
   from_pt: null
   share_projection: true
   pooling_type: mean
-  head_dropout: 0.2
+  head_dropout: 0.1
   mlp_decoder: True
   mlp_activation: gelu
   # distribution_output 

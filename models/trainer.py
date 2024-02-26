@@ -140,7 +140,7 @@ class Trainer():
         else:
             self.model = model
 
-        self.print_v(f"Model number of trainabel parameters: {sum(p.numel() for p in self.model.parameters() if p.requires_grad):,}", verbosity=0)
+        self.print_v(f"Model number of trainable parameters: {sum(p.numel() for p in self.model.parameters() if p.requires_grad):,}", verbosity=0)
             
 
     """ Get the used columns of the dataset

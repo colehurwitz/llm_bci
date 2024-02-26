@@ -39,6 +39,7 @@ data:
   
   dataset_dir: /home/gridsan/dbeneto/MAML-Soljacic_shared/BCI/data/competitionData
   zscore: false
+  features: ["tx1"]
   
 method:
 

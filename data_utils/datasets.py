@@ -31,8 +31,12 @@ class SpikingDataset(Dataset):
         return len(self.dataset)
 
     def __getitem__(self, idx):
+        spikes = self.dataset[idx]["spikes"]
         return {
-            "spikes": self.dataset[idx]["spikes"],    # (seq_len, num_channels)
+            "spikes": spikes,                                           # (seq_len, num_channels)
+            "spikes_mask": np.ones(spikes.shape[0], dtype=np.int64),    # (seq_len)
+            "spikes_timestamp": np.arange(0,spikes.shape[0]),           # (seq_len)
+            "spikes_lengths": np.asarray(spikes.shape[0]),              # (1)
         }
 
 
@@ -63,11 +67,15 @@ class SpikingDatasetForCTC(SpikingDataset):
 
     def __getitem__(self, idx):
         targets = self.dataset[idx][f"{self.target_name}_idx"]
+        spikes = self.dataset[idx]["spikes"]
         return {
-            "spikes":   self.dataset[idx]["spikes"],    # (seq_len, num_channels)
-            "spikes_lengths": np.asarray(self.dataset[idx]["spikes"].shape[0]) # (1)
-            "targets":  targets,                        # (seq_len)
-            "targets_lengths": np.asarray(len(targets)) # (1)
+            "spikes": spikes,                                       # (seq_len, num_channels)
+            "spikes_mask": np.ones_like(spikes[0], dtype=np.int64), # (seq_len)
+            "spikes_timestamp": np.arange(0,spikes.shape[0]),       # (seq_len)
+            "spikes_lengths": np.asarray(spikes.shape[0]),          # (1)
+            "targets":  targets,                                    # (seq_len)
+            "targets_mask": np.ones_like(targets),                  # (seq_len)
+            "targets_lengths": np.asarray(len(targets)),            # (1)
         }
 
 
@@ -147,6 +155,8 @@ def pad_collate_fn(
         if key in array_keys:
             if key in pad_keys:
                 value = torch.from_numpy(padded_array([row[key] for row in batch],**pad_dict[key])).clone()
+            elif len(set(row[key].shape for row in batch)) == 1:
+                value = torch.tensor(np.asarray([row[key] for row in batch]))
             else:
                 value = [torch.from_numpy(row[key]) for row in batch]
         else:

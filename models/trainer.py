@@ -22,7 +22,7 @@ from datasets import load_dataset
 from utils.config_utils import DictConfig, config_from_kwargs, update_config
 from data_utils.datasets import SpikingDataset, SpikingDatasetForCTC, pad_collate_fn
 from models.patchtst import PatchTSTForSpikingActivity
-
+from models.ndt1 import NDT1
 
 """ Mapping from dataset class names to dataset class. New dataset classes should be registered here
 """
@@ -30,7 +30,7 @@ NAME2DATASET = {"ssl": SpikingDataset, "ctc": SpikingDatasetForCTC}
 
 """ Mapping from model class names to model class. New model classes should be registered here
 """
-NAME2MODEL = {"PatchTST": PatchTSTForSpikingActivity}
+NAME2MODEL = {"PatchTST": PatchTSTForSpikingActivity, "NDT1": NDT1}
 
 """ Base configuration for the Trainer. 
 """

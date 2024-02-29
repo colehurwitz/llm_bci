@@ -58,8 +58,20 @@ method:
         dim: 0
         side: right
         value: 0
-        truncate: 200
-        min_length: 200
+        truncate: null
+        min_length: null
+      spikes_mask:
+        dim: 0
+        side: right
+        value: 0
+        truncate: null
+        min_length: null
+      spikes_timestamp:
+        dim: 0
+        side: right
+        value: 0
+        truncate: null
+        min_length: null
 
 optimizer:
   gradient_accumulation_steps: 1

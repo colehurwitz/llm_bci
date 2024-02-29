@@ -58,7 +58,25 @@ method:
         value: 0
         truncate: 200
         min_length: 200
+      spikes_mask:
+        dim: 0
+        side: right
+        value: 0
+        truncate: 200
+        min_length: 200
+      spikes_timestamp:
+        dim: 0
+        side: right
+        value: 0
+        truncate: 200
+        min_length: 200
       targets:
+        dim: 0
+        side: right
+        value: 0
+        truncate: null
+        min_length: null
+      targets_mask:
         dim: 0
         side: right
         value: 0

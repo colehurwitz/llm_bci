@@ -177,7 +177,7 @@ class PatchTSTForSpikingActivity(nn.Module):
 
         # Build decoder
         decoder_pt_path = config["decoder"].pop("from_pt", None)
-        if config.decoder.from_pt is not None:
+        if decoder_pt_path is not None:
             decoder_config = os.path.join(decoder_pt_path , "decoder_config.yaml")
             config["decoder"] = update_config(config.decoder, decoder_config)
         decoder_class = METHOD2HEAD[self.method]
@@ -202,9 +202,9 @@ class PatchTSTForSpikingActivity(nn.Module):
 
     def forward(
         self,
-        spikes: torch.LongTensor,                           # (bs, seq_len, n_input_channels)
-        targets: Optional[torch.Tensor] = None,             # (bs, seq_len)
-        targets_lengths: Optional[torch.LongTensor] = None, # (bs)
+        spikes:             torch.LongTensor,                   # (bs, seq_len, n_input_channels)
+        targets:            Optional[torch.Tensor] = None,      # (bs, seq_len)
+        targets_lengths:    Optional[torch.LongTensor] = None,  # (bs)
     ) -> PatchTSTOutput:
 
         outputs = self.encoder(spikes)   

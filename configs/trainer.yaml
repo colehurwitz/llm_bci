@@ -55,13 +55,14 @@ method:
   # Passed to the DataLoader __init__ method.
   dataloader_kwargs:
     # Contains which keys to pad, along which dimension with which value
-    pad_dict:
+    pad_dict: 
       spikes:
-        dim: 0
-        side: right
-        value: 0
-        truncate: 200
-        min_length: 200
+          dim: 0
+          side: right
+          value: 0
+          truncate: null
+          min_length: null
+      
 
 # Optimizer configuration
 optimizer:

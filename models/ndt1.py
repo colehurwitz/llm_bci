@@ -1,3 +1,4 @@
+import os
 from dataclasses import dataclass
 from copy import deepcopy
 from typing import List, Optional, Tuple, Dict
@@ -11,7 +12,7 @@ from scipy import signal
 from transformers.activations import ACT2FN
 ACT2FN["softsign"] = nn.Softsign
 
-from utils.config_utils import DictConfig
+from utils.config_utils import DictConfig, update_config
 from models.model_output import ModelOutput
 
 DEFAULT_CONFIG = "configs/ndt1.yaml"
@@ -245,6 +246,8 @@ class NeuralEmbeddingLayer(nn.Module):
             self.stacking = nn.Unfold(kernel_size=(config.stack.size, self.input_dim),stride=(config.stack.stride,1))
             self.stacking_mask = nn.Unfold(kernel_size=(config.stack.size, 1),stride=(config.stack.stride,1))
             self.stack_projection = nn.Linear(self.input_dim*config.stack.size,hidden_size)
+        else:
+            self.projection = nn.Linear(self.input_dim, hidden_size)
 
         # Activation after embedding
         self.act = ACT2FN[config.act] if config.act != "identity" else nn.Identity()
@@ -283,6 +286,8 @@ class NeuralEmbeddingLayer(nn.Module):
             x = self.stack_projection(self.stacking(x.unsqueeze(1)).transpose(1,2))
             spikes_timestamp = spikes_timestamp[:,:x.size(1)] # keep the first positions
             spikes_mask = self.stacking_mask(spikes_mask.unsqueeze(-1).unsqueeze(1).float()).transpose(1,2).prod(-1).to(spikes_mask.dtype) # unmask only spikes tha come from unmasked spikes
+        else:
+            x = self.projection(x)
 
         # Embed position
         if self.pos:
@@ -418,9 +423,9 @@ class NeuralEncoderLayer(nn.Module):
         self.use_rope = config.use_rope
 
         # Encoder block
-        self.ln1 = ScaleNorm(config.hidden_size ** 0.5) if config.use_scalenorm else nn.LayerNorm(config.hidden_size, bias=config.norm_bias) 
+        self.ln1 = ScaleNorm(config.hidden_size ** 0.5) if config.use_scalenorm else nn.LayerNorm(config.hidden_size) 
         self.attn = NeuralAttention(idx, config.hidden_size, config.n_heads, config.attention_bias, config.dropout, config.use_rope, config.rope_theta, max_F)
-        self.ln2 = ScaleNorm(config.hidden_size ** 0.5) if config.use_scalenorm else nn.LayerNorm(config.hidden_size, bias=config.norm_bias) 
+        self.ln2 = ScaleNorm(config.hidden_size ** 0.5) if config.use_scalenorm else nn.LayerNorm(config.hidden_size) 
         self.mlp = NeuralMLP(config.hidden_size, config.inter_size, config.act, config.mlp_bias, config.dropout)
 
         if config.fixup_init:
@@ -491,7 +496,7 @@ class NeuralEncoder(nn.Module):
 
     def __init__(
         self, 
-        config: DictConfig
+        config: DictConfig,
         **kwargs
     ):
         super().__init__() 
@@ -510,7 +515,7 @@ class NeuralEncoder(nn.Module):
         self.register_buffer("context_mask", context_mask, persistent=False)
 
         # Normalization and noising layer
-        self.norm_and_noise = NormAndNoise(config.n_channels, config.norm_and_noise)
+        self.norm_and_noise = NormAndNoise(config.embedder.n_channels, config.norm_and_noise)
 
         # Embedding layer
         self.embedder = NeuralEmbeddingLayer(self.hidden_size, config.embedder)
@@ -572,7 +577,7 @@ class NDT1(nn.Module):
 
     def __init__(
         self, 
-        config: DictConfig
+        config: DictConfig,
         **kwargs
     ):
         super().__init__()
@@ -594,6 +599,7 @@ class NDT1(nn.Module):
 
         # Build decoder
         if self.method == "ssl":
+            assert config.encoder.masker.active, "Can't pretrain with inactive masking"
             n_outputs = config.encoder.embedder.n_channels
         elif self.method == "ctc":
             n_outputs = kwargs["vocab_size"]
@@ -628,14 +634,13 @@ class NDT1(nn.Module):
         spikes:           torch.FloatTensor,  # (bs, seq_len, n_channels)
         spikes_mask:      torch.LongTensor,   # (bs, seq_len)
         spikes_timestamp: torch.LongTensor,   # (bs, seq_len)
-        targets:          Optional[torch.FloatTensor] = None,  # (bs, tar_len)
-        spikes_len:       Optional[torch.LongTensor] = None,   # (bs)
-        targets_len:      Optional[torch.LongTensor] = None,   # (bs)
+        spikes_lengths:   Optional[torch.LongTensor] = None,   # (bs)
+        targets:          Optional[torch.FloatTensor] = None,  # (bs, tar_len) 
+        targets_lengths:  Optional[torch.LongTensor] = None,   # (bs)
         block_idx:        Optional[torch.LongTensor] = None,   # (bs)
         date_idx:         Optional[torch.LongTensor] = None,   # (bs)
-    ) -> NeuralPretrainerOutput:      
+    ) -> NDT1Output:      
 
-        spikes_timestamp = None
         if self.method == "ssl":
             targets = spikes.clone()
             if self.encoder.int_spikes:
@@ -643,7 +648,7 @@ class NDT1(nn.Module):
 
         # Encode neural data
         x, targets_mask = self.encoder(spikes, spikes_mask, spikes_timestamp, block_idx, date_idx)
-        spikes_len = self.encoder.embedder.get_stacked_lens(spikes_len)
+        spikes_lengths = self.encoder.embedder.get_stacked_lens(spikes_lengths)
 
         # Transform neural embeddings into rates/logits
         outputs = self.decoder(x)
@@ -653,7 +658,7 @@ class NDT1(nn.Module):
             loss = (self.loss_fn(outputs, targets) * targets_mask).sum()
             n_examples = targets_mask.sum()
         elif self.method == "ctc":
-            loss = self.loss_fn(outputs.transpose(0,1), targets, spikes_len, targets_len)
+            loss = self.loss_fn(outputs.transpose(0,1), targets, spikes_lengths, targets_len)
             n_examples = torch.Tensor(len(targets)).to(loss.device, torch.long)
 
         return NDT1Output(

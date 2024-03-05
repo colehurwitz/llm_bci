@@ -31,20 +31,25 @@ class SpikingDataset(Dataset):
         return len(self.dataset)
 
     def __getitem__(self, idx):
-        spikes = self.dataset[idx]["spikes"]
-        return {
+        # Gather all columns and remove special columns
+        inputs = deepcopy(self.dataset[idx])
+        _ = [inputs.pop(k) for k in ["spikes"]]
+
+        spikes = self.dataset[idx]["spikes"].astype(np.float32)
+        inputs.update({
             "spikes": spikes,                                           # (seq_len, num_channels)
             "spikes_mask": np.ones(spikes.shape[0], dtype=np.int64),    # (seq_len)
             "spikes_timestamp": np.arange(0,spikes.shape[0]),           # (seq_len)
             "spikes_lengths": np.asarray(spikes.shape[0]),              # (1)
-        }
+        })
+        return inputs
 
 
 
 """ Dataset to use for CTC training. 
 INPUTS
     dataset: list of examples. Each example is a dict.
-    target_name: name of the CTC labels in the dataset
+    targets_name: name of the CTC labels in the dataset
     length: the list is trimmed up to this value
 OUTPUTS
     Dict{
@@ -59,24 +64,31 @@ class SpikingDatasetForCTC(SpikingDataset):
         self, 
         dataset: List[Dict[str,Union[np.ndarray,Any]]], 
         length: Optional[int] = None,
-        target_name: Optional[str] = "targets",
+        targets_name: Optional[str] = "targets",
     ):  
         super().__init__(dataset, length)
 
-        self.target_name = target_name
+        self.targets_name = targets_name
 
     def __getitem__(self, idx):
-        targets = self.dataset[idx][f"{self.target_name}_idx"]
-        spikes = self.dataset[idx]["spikes"]
-        return {
-            "spikes": spikes,                                       # (seq_len, num_channels)
-            "spikes_mask": np.ones_like(spikes[0], dtype=np.int64), # (seq_len)
-            "spikes_timestamp": np.arange(0,spikes.shape[0]),       # (seq_len)
-            "spikes_lengths": np.asarray(spikes.shape[0]),          # (1)
-            "targets":  targets,                                    # (seq_len)
-            "targets_mask": np.ones_like(targets),                  # (seq_len)
-            "targets_lengths": np.asarray(len(targets)),            # (1)
-        }
+        # Gather all columns and remove special columns
+        inputs = deepcopy(self.dataset[idx])
+        _ = [inputs.pop(k) for k in ["spikes", f"{self.targets_name}"]]
+        
+        # Add new columns
+        targets = self.dataset[idx][f"{self.targets_name}"].astype(np.int64)
+        spikes = self.dataset[idx]["spikes"].astype(np.float32)
+        inputs.update({
+            "spikes": spikes,                                           # (seq_len, num_channels)
+            "spikes_mask": np.ones(spikes.shape[0], dtype=np.int64),    # (seq_len)
+            "spikes_timestamp": np.arange(0,spikes.shape[0]),           # (seq_len)
+            "spikes_lengths": np.asarray(spikes.shape[0]),              # (1)
+            "targets":  targets,                                        # (seq_len)
+            "targets_mask": np.ones_like(targets),                      # (seq_len)
+            "targets_lengths": np.asarray(len(targets)),                # (1)
+        })
+        return inputs
+        
 
 
             
@@ -160,7 +172,7 @@ def pad_collate_fn(
             else:
                 value = [torch.from_numpy(row[key]) for row in batch]
         else:
-            value = deepcopy(value)
+            value = [row[key] for row in batch]
 
         if key in model_inputs:
             padded_batch[key] = value

@@ -14,9 +14,9 @@ dirs:
 
 # Training configuration
 training:
-  num_epochs: 100
+  num_epochs: 500
   train_batch_size: 32
-  test_batch_size: 32      
+  test_batch_size: 32    
   shuffle_test_dataloader: true    # Shuffle test dataloader between epochs
 
   save_every: 1500 # Save checkpoint
@@ -24,7 +24,7 @@ training:
 
 
 
-model: include:configs/patchtst.yaml
+model: {}
 
 data:
   dataset_class: ssl
@@ -36,10 +36,13 @@ data:
   test_name: test     # name of the test split in the raw datasete
   train_len: null     # used length of the train dataset. null to use all
   test_len: null      # used length of the test dataset. null to use all
-  
+
+  data_name: speechbci # maze/speechbci
+  data_file: /home/gridsan/dbeneto/MAML-Soljacic_shared/BCI/data/maze_spikes.pth
   dataset_dir: /home/gridsan/dbeneto/MAML-Soljacic_shared/BCI/data/competitionData
   zscore: false
   features: ["tx1"]
+  date_idxs: null
   
 method:
 
@@ -47,7 +50,7 @@ method:
     method_name: ssl
 
     use_lograte: true
-    loss: poisson_nll # mse/other distirbutions (todo)
+    loss: poisson_nll # poisson_nll/mse(todo)
 
   dataset_kwargs: {}
 
@@ -56,22 +59,24 @@ method:
     pad_dict:
       spikes:
         dim: 0
-        side: right
+        side: left
         value: 0
         truncate: null
         min_length: null
       spikes_mask:
         dim: 0
-        side: right
+        side: left
         value: 0
         truncate: null
         min_length: null
       spikes_timestamp:
         dim: 0
-        side: right
+        side: left
         value: 0
         truncate: null
         min_length: null
+
+  metric_kwargs: {}
 
 optimizer:
   gradient_accumulation_steps: 1

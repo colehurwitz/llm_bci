@@ -118,7 +118,8 @@ class Masker(nn.Module):
             mask = mask.unsqueeze(2).expand_as(spikes).bool()    # (bs, seq_len, n_channels)
         elif self.mode == "neuron":
             mask = mask.unsqueeze(1).expand_as(spikes).bool()    # (bs, seq_len, n_channels)
-        
+        else: # full
+            mask = mask.bool()
         # Mask data
         zero_idx = torch.bernoulli(torch.full(spikes.shape, self.zero_ratio)).to(spikes.device).bool() & mask
         spikes[zero_idx] = 0
@@ -390,7 +391,7 @@ class NeuralAttention(nn.Module):
         B, T, _  = x.size()     # batch size and fea len
 
         # Create batched bool attention mask 
-        assert attn_mask.max() == 1 and attn_mask.min() == 0, ["assertion", attn_mask.max(), attn_mask.min()]
+        assert attn_mask.max() <= 1 and attn_mask.min() >= 0, ["assertion", attn_mask.max(), attn_mask.min()]
         attn_mask = attn_mask.unsqueeze(1).expand(B,self.n_heads,T,T).bool()            # (B,n_heads,T,T)
         
         # Compute query, key, value for attention
@@ -462,8 +463,6 @@ class NeuralEncoderLayer(nn.Module):
 
 
 
-
-
 class NeuralFactorsProjection(nn.Module):
 
     def __init__(self, hidden_size, config):
@@ -530,12 +529,12 @@ class NeuralEncoder(nn.Module):
 
     def forward(
             self, 
-            spikes:           torch.FloatTensor,  # (bs, seq_len, n_channels)
-            spikes_mask:      torch.LongTensor,   # (bs, seq_len)
-            spikes_timestamp: torch.LongTensor,   # (bs, seq_len)
+            spikes:             torch.FloatTensor,  # (bs, seq_len, n_channels)
+            spikes_mask:        torch.LongTensor,   # (bs, seq_len)
+            spikes_timestamp:   torch.LongTensor,   # (bs, seq_len)
             block_idx:          Optional[torch.LongTensor] = None,   # (bs)
             date_idx:           Optional[torch.LongTensor] = None,   # (bs)
-    ) -> torch.FloatTensor:                     # (bs, seq_len, hidden_size)
+    ) -> Tuple[torch.FloatTensor, torch.LongTensor]:    # [(bs, seq_len, hidden_size), (bs, seq_len, n_channels)]
         
         B, T, N = spikes.size() # batch size, fea len, n_channels
         
@@ -545,19 +544,19 @@ class NeuralEncoder(nn.Module):
         # Normalize across channels and add noise
         spikes = self.norm_and_noise(spikes)
 
-        # Mask neural data
+
+        # Mask neural data. Mask is True for masked bins
         if self.mask:
             spikes, targets_mask = self.masker(spikes)
-            targets_mask = targets_mask & spikes_mask.unsqueeze(-1).expand(B,T,N)
         else:
-            targets_mask = None
+            targets_mask = torch.zeros_like(spikes, dtype=torch.int64)
 
         # Embed neural data
         x, spikes_mask, spikes_timestamp = self.embedder(spikes, spikes_mask, spikes_timestamp, block_idx, date_idx)
 
         _, T, _ = x.size() # feature len may have changed after stacking
 
-        # Prepare 
+        # Prepare mask
         context_mask = self.context_mask[:T,:T].to(x.device).unsqueeze(0).expand(B,T,T)
         spikes_mask = spikes_mask.unsqueeze(1).expand(B,T,T)
         self_mask = torch.eye(T).to(x.device, torch.int64).expand(B,T,T) # hack so that even padded spikes attend to themselves and avoid attention issues
@@ -600,6 +599,11 @@ class NDT1(nn.Module):
         # Build decoder
         if self.method == "ssl":
             assert config.encoder.masker.active, "Can't pretrain with inactive masking"
+            assert not config.encoder.embedder.stack.active, "Can't pretrain with stacked inputs"
+            n_outputs = config.encoder.embedder.n_channels
+        elif self.method == "autoregressive":
+            assert config.encoder.context.forward == 0, "Can't train autoregressive with forward context"
+            assert not config.encoder.embedder.stack.active, "Can't train autoregressive with stacked inputs"
             n_outputs = config.encoder.embedder.n_channels
         elif self.method == "ctc":
             n_outputs = kwargs["vocab_size"]
@@ -609,9 +613,9 @@ class NDT1(nn.Module):
         decoder_layers = []
         decoder_layers.append(nn.Linear(self.encoder.out_proj.out_size, n_outputs))
 
-        if self.method == "sft" and not kwargs["use_lograte"]:
+        if self.method in ["sft","autoregressive"] and kwargs["loss"] == "poisson_nll" and not kwargs["use_lograte"]:
             decoder_layers.append(nn.ReLU()) # If we're not using lograte, we need to feed positive rates
-        if self.method == "ctc":
+        elif self.method == "ctc":
             decoder_layers.append(nn.LogSoftmax(dim=-1))  # CTC loss asks for log-softmax-normalized logits
         self.decoder = nn.Sequential(*decoder_layers)
 
@@ -620,9 +624,11 @@ class NDT1(nn.Module):
             self.decoder.load_state_dict(torch.load(os.path.join(config.decoder.from_pt,"decoder.bin")))
 
         # Build loss function
-        if self.method == "ssl":
+        if self.method in ["ssl","autoregressive"]:
             if kwargs["loss"] == "poisson_nll":
                 self.loss_fn = nn.PoissonNLLLoss(reduction="none", log_input=kwargs["use_lograte"])
+            elif kwargs["loss"] == "mse":
+                self.loss_fn = nn.MSELoss(reduction="none")
             else:   
                 raise Exception(f"Loss {kwargs['loss']} not implemented yet for ssl")
         elif self.method == "ctc":
@@ -641,7 +647,7 @@ class NDT1(nn.Module):
         date_idx:         Optional[torch.LongTensor] = None,   # (bs)
     ) -> NDT1Output:      
 
-        if self.method == "ssl":
+        if self.method in ["ssl","autoregressive"]:
             targets = spikes.clone()
             if self.encoder.int_spikes:
                 targets = targets.to(torch.int64)
@@ -651,21 +657,63 @@ class NDT1(nn.Module):
         spikes_lengths = self.encoder.embedder.get_stacked_lens(spikes_lengths)
 
         # Transform neural embeddings into rates/logits
-        outputs = self.decoder(x)
+        preds = self.decoder(x)     # (bs, seq_len, vocab_size) or (bs, seq_len, n_channels)
 
-        # Compute the loss over unmasked outputs
+        # Compute the loss over unmasked preds
         if self.method == "ssl":
-            loss = (self.loss_fn(outputs, targets) * targets_mask).sum()
+            # Include padding in mask
+            targets_mask = targets_mask & spikes_mask.unsqueeze(2) 
+            # Compute the loss only over masked timesteps that are not padded 
+            loss = (self.loss_fn(preds, targets) * targets_mask).sum()
             n_examples = targets_mask.sum()
+        elif self.method == "autoregressive":
+            # Shift preds and targets to perform next timestep prediction
+            shift_mask = spikes_mask[:,1:]      # (bs, seq_len-1)
+            shift_preds = preds[:,:-1,:]        # (bs, seq_len-1, n_channels)
+            shift_targets = targets[:,1:,:]     # (bs, seq_len-1, n_channels)
+            # Compute the loss only over timesteps that are not padded 
+            loss = (self.loss_fn(shift_preds, shift_targets) * shift_mask.unsqueeze(2) ).sum()
+            n_examples = shift_mask.sum()
         elif self.method == "ctc":
-            loss = self.loss_fn(outputs.transpose(0,1), targets, spikes_lengths, targets_len)
-            n_examples = torch.Tensor(len(targets)).to(loss.device, torch.long)
+            loss = self.loss_fn(log_probs=preds.transpose(0,1), targets=targets, input_lengths=spikes_lengths, target_lengths=targets_lengths).sum()
+            n_examples = torch.tensor(len(targets), device=loss.device, dtype=torch.long)
 
         return NDT1Output(
             loss=loss,
             n_examples=n_examples,
-            preds=outputs,
+            preds=preds,
         )
+
+
+    def generate(
+        self, 
+        spikes:             torch.FloatTensor,                  # (bs, seq_len, n_channels)
+        spikes_mask:        torch.LongTensor,                   # (bs, seq_len)
+        spikes_timestamp:   torch.LongTensor,                   # (bs, seq_len)
+        spikes_lengths:     Optional[torch.LongTensor]  = None, # (bs)
+        targets:            Optional[torch.FloatTensor] = None, # (bs, tar_len) 
+        targets_lengths:    Optional[torch.LongTensor]  = None, # (bs)
+        block_idx:          Optional[torch.LongTensor]  = None, # (bs)
+        date_idx:           Optional[torch.LongTensor]  = None, # (bs)
+        max_new_bins:       Optional[int]               = 16,        
+    ) -> NDT1Output:      
+
+        preds = []
+
+        inputs = spikes
+        inputs_mask = spikes_mask
+        inputs_timestamp = spikes_timestamp
+        for i in range(max_new_bins):
+            outputs = self(spikes=inputs, spikes_mask=inputs_mask, spikes_timestamp=inputs_timestamp)
+            new_bins = outputs.preds[:,-1:,:]    # (bs, 1, n_channels)
+            inputs = torch.cat((inputs,new_bins),dim=1)  # (bs, seq_len+i+1, n_channels)
+            # Assumes left padding
+            inputs_mask = torch.cat((inputs_mask,torch.ones_like(inputs_mask[:,-1:])),dim=1)  # (bs, seq_len+i+1)
+            inputs_timestamp = torch.cat((inputs_timestamp,inputs_timestamp[:,-1:]+1),dim=1) # (bs, seq_len+i+1)
+            preds.append(new_bins[:,0,:])
+
+        
+        return torch.stack(preds, 1)    # (bs, max_new_bins, n_channels)
 
 
     def save_checkpoint(self, save_dir):

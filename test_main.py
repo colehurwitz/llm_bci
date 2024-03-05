@@ -1,5 +1,12 @@
+import yaml
+import json
+import torch
 from importlib import reload as rl
-from utils.config_utils import config_from_kwargs, update_config
+from utils.config_utils import config_from_kwargs, update_config, DictConfig
+
+import utils
+import utils.eval_utils
+from utils.eval_utils import format_ctc, word_error_count
 
 import transformers
 import transformers.models
@@ -16,26 +23,71 @@ import models.ndt1
 from models.trainer import Trainer, default_trainer_config
 
 kwargs = {
-    "training.num_epochs": "1", "training.train_batch_size": "1", "training.test_batch_size": "1",
-    "training.eval_every": "32", "training.save_every": "32", 
-    "data.train_len": "32", "data.test_len": "32",
-    "model": "include:configs/patchtst.yaml"
+    "training.num_epochs": "1", "training.train_batch_size": "2", "training.test_batch_size": "2",
+    "optimizer.gradient_accumulation_steps": "1",
+    "training.eval_every": "50", "training.save_every": "50", 
+    "data.train_len": "4000", "data.test_len": "4000",
+    "model": "include:configs/ndt1s.yaml",
+    "data.data_name": "speechbci",
 }
 
-config_file = "configs/trainer_ssl.yaml"
+config_file = "configs/trainer_autoregressive.yaml"
 config = update_config(default_trainer_config(), config_file)
 config = update_config(config, config_from_kwargs(kwargs))
-import yaml
-print(yaml.dump(dict(config), allow_unicode=True, default_flow_style=False))
 
-dataset = load_competition_data(config.data.dataset_dir, **config.data)
-if getattr(config["data"], "vocab_file", None) is not None:
-    dataset = create_phonemes_ctc_labels(dataset, config.data.vocab_file)
+# # Load
+# if config.data.data_name == "maze":
+#         dataset = torch.load(config.data.data_file)
+# elif config.data.data_name == "speechbci":
+#     dataset = load_competition_data(config.data.dataset_dir, **config.data)
+#     if "vocab_file" in config["data"] and config.data.vocab_file is not None:
+#         blank_id = config.method.model_kwargs.blank_id
+#         vocab = json.load(open(config.data.vocab_file,"r"))
+#         dataset = create_phonemes_ctc_labels(dataset, config.data.vocab_file)
+
+# Adjust models based on dataset
+if config.model.model_class == "PatchTST":
+    # We need uniform lenght of the padded batches for PatchTST
+    p = config.model.encoder.patch_length
+    context = ((max(row["spikes"].shape[0] for split in dataset.values() for row in split) + p-1) // p) * p
+    pad_update = DictConfig( {"method": {"dataloader_kwargs": {"pad_dict":
+        {
+            "spikes": 
+                {
+                    "dim": 0,
+                    "side": "left",
+                    "value": 0,
+                    "truncate": context,
+                    "min_length": context,
+                },   
+            "spikes_mask": {
+                "dim": 0,
+                "side": "left",
+                "value": 0,
+                "truncate": context,
+                "min_length": context,
+                },
+            "spikes_timestamp": {
+                "dim": 0,
+                "side": "left",
+                "value": 0,
+                "truncate": context,
+                "min_length": context,
+            }
+        }
+    }}})
+    config = update_config(config, pad_update)
+    config["model"]["encoder"]["context_length"] = context
+    config["model"]["encoder"]["num_input_channels"] = dataset["train"][0]["spikes"].shape[1]
+elif config.model.model_class == "NDT1":
+    config["model"]["encoder"]["embedder"]["n_channels"] = dataset["train"][0]["spikes"].shape[1]
 
 
-# def metric_1(model, model_inputs, unused_inputs, outputs):
-#     return torch.tensor(0.0)
+# print(yaml.dump(dict(config), allow_unicode=True, default_flow_style=False))
 
+rl(utils)
+rl(utils.eval_utils)
+from utils.eval_utils import *
 rl(data_utils)
 rl(data_utils.datasets)
 rl(data_utils.speechbci_dataset)
@@ -49,20 +101,34 @@ from models.patchtst import *
 from models.ndt1 import *
 from models.trainer import Trainer
 
-kwargs = {
-    "training.num_epochs": "1", "training.train_batch_size": "4", "training.test_batch_size": "1",
-    "training.eval_every": "32", "training.save_every": "32", 
-    "data.train_len": "320", "data.test_len": "320",
-    "model": "include:configs/ndt1.yaml"
-}
 
-config_file = "configs/trainer_ssl.yaml"
-config = update_config(default_trainer_config(), config_file)
-config = update_config(config, config_from_kwargs(kwargs))
 
-trainer = Trainer(config, dataset=dataset)
+
+config["verbosity"] = 0
+trainer = Trainer(config, dataset=dataset, metric_fns={"A": metric_1})#, "WER": wer})
 di = iter(trainer.train_dataloader)
 ex = next(di)
+# preds = trainer.model.generate(**ex[0], max_new_bins=2)
 
 trainer.train()
+
+
+def wer(model, model_inputs, unused_inputs, outputs, **kwargs):
+    preds = outputs["preds"].argmax(-1)
+    preds = [" ".join(format_ctc(pred, vocab, blank_id)) for pred in preds]
+    phonemes = [" ".join(p) for p in unused_inputs["phonemes"]]
+    errors, n_phonemes = word_error_count(preds, phonemes)
+    for i in range(kwargs["n_print"]):
+        print(preds[i].replace(" ","").replace("SIL"," SIL "), "\n#####\n ", 
+            phonemes[i].replace(" ","").replace("SIL"," SIL "),"\n#####\n ", 
+            unused_inputs["sentence"][i], "\n#####\n\n ")
+    return torch.tensor(errors/n_phonemes)
+
+def metric_1(model, model_inputs, unused_inputs, outputs, **kwargs):
+    a = model_inputs
+    b = unused_inputs
+    c = outputs
+    torch.save({"inputs": a, "unused": b, "outputs": c}, "b.pth")
+    return torch.tensor(0.0)
+
 

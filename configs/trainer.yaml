@@ -58,11 +58,13 @@ method:
     pad_dict: 
       spikes:
           dim: 0
-          side: right
+          side: left
           value: 0
           truncate: null
           min_length: null
-      
+
+  # Passed to all metrics
+  metric_kwargs: {}
 
 # Optimizer configuration
 optimizer:

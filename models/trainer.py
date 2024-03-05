@@ -1,5 +1,6 @@
 import os
 import wandb 
+import yaml
 import json
 import inspect
 from functools import partial
@@ -85,6 +86,7 @@ class Trainer():
 
         self.prepare_for_distributed_training()
         
+        self.metric_kwargs = config.method.metric_kwargs
         self.metric_fns = metric_fns if metric_fns else {}
         self.eval_metric_fns = eval_metric_fns if eval_metric_fns else {}
         
@@ -140,6 +142,7 @@ class Trainer():
         else:
             self.model = model
 
+        self.print_v(self.model)
         self.print_v(f"Model number of trainable parameters: {sum(p.numel() for p in self.model.parameters() if p.requires_grad):,}", verbosity=0)
             
 
@@ -283,7 +286,7 @@ class Trainer():
 
             # Metrics
             for name, fn in metric_fns.items():
-                test_metrics[name].append(self.accelerator.gather(fn(self.model, model_inputs, unused_inputs, outputs.to_dict())).sum().detach().item())
+                test_metrics[name].append(self.accelerator.gather(fn(self.model, model_inputs, unused_inputs, outputs.to_dict(), **self.metric_kwargs)).sum().detach().item())
 
 
         test_avg_loss = sum(test_loss) / sum(test_examples)
@@ -299,7 +302,7 @@ class Trainer():
         config = self.config
 
         self.print_v(f"Starting run {config.savestring} with config: ", verbosity=0)
-        self.print_v(config, verbosity=0) 
+        self.print_v(yaml.dump(dict(config), allow_unicode=True, default_flow_style=False), verbosity=0) 
 
         # Train
         global_step = 0
@@ -341,7 +344,7 @@ class Trainer():
 
                 # Metrics
                 for name, fn in self.metric_fns.items():
-                    train_metrics[name].append(self.accelerator.gather(fn(self.model, model_inputs, unused_inputs, outputs.to_dict())).sum().detach().item())
+                    train_metrics[name].append(self.accelerator.gather(fn(self.model, model_inputs, unused_inputs, outputs.to_dict(), **self.metric_kwargs)).sum().detach().item())
                     if self.accelerator.is_main_process:
                         self.writer.add_scalar(f"{name}/train_iter",train_metrics[name][-1], global_step)
 

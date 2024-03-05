@@ -14,43 +14,46 @@ dirs:
 
 # Training configuration
 training:
-  num_epochs: 100
+  num_epochs: 500
   train_batch_size: 32
-  test_batch_size: 32      
-  shuffle_test_dataloader: false    # Shuffle test dataloader between epochs
+  test_batch_size: 32    
+  shuffle_test_dataloader: true    # Shuffle test dataloader between epochs
 
-  save_every: 1500  # Save checkpoint
-  eval_every: 275  # Eval model
+  save_every: 1500 # Save checkpoint
+  eval_every: 250  # Eval model
+
+
 
 model: {}
 
 data:
-  dataset_class: ctc
+  dataset_class: ssl
 
   hf_dataset_name: null
   json_dataset_name: null
-
+  
   train_name: train   # name of the train split in the raw datasete
   test_name: test     # name of the test split in the raw datasete
   train_len: null     # used length of the train dataset. null to use all
   test_len: null      # used length of the test dataset. null to use all
 
-  data_name: speechbci
+  data_name: maze     # maze/speechbci
+  data_file: /home/gridsan/dbeneto/MAML-Soljacic_shared/BCI/data/maze_spikes.pth
   dataset_dir: /home/gridsan/dbeneto/MAML-Soljacic_shared/BCI/data/competitionData
-  zscore: True
-  vocab_file: vocab.json
+  zscore: false
+  features: ["tx1"]
   date_idxs: null
-
+  
 method:
 
   model_kwargs:
-    method_name: ctc     # ssl
-    vocab_size: 41
-    blank_id: 0
-    zero_infinity: false
+    method_name: autoregressive
 
-  dataset_kwargs:
-    targets_name: phonemes_idx
+    use_lograte: true
+    loss: poisson_nll   # mse/poisson_nll (todo)
+
+  dataset_kwargs: {}
+
 
   dataloader_kwargs:
     pad_dict:
@@ -72,28 +75,15 @@ method:
         value: 0
         truncate: null
         min_length: null
-      targets:
-        dim: 0
-        side: left
-        value: 0
-        truncate: null
-        min_length: null
-      targets_mask:
-        dim: 0
-        side: left
-        value: 0
-        truncate: null
-        min_length: null
 
-  metric_kwargs:
-    n_print: 0
+  metric_kwargs: {}
 
 optimizer:
   gradient_accumulation_steps: 1
   lr: 1.e-4
   wd: 0.01
   eps: 1.e-8
-  warmup_pct: 0.0 # cosine/linear
+  warmup_pct: 0.15 # cosine/linear
   gamma: 0.95     # step
   div_factor: 10  # cosine
-  scheduler: step # step/cosine/linear
+  scheduler: cosine # step/cosine/linear

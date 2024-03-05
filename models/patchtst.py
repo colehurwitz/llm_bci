@@ -21,6 +21,9 @@ class PatchTSTOutput(ModelOutput):
     loss: Optional[torch.FloatTensor] = None
     n_examples: Optional[torch.LongTensor] = None
     preds: Optional[torch.FloatTensor] = None
+    mask: Optional[torch.FloatTensor] = None
+    patch_input: Optional[torch.FloatTensor] = None
+
 
 class PredictHead(nn.Module):
 
@@ -61,7 +64,7 @@ class PredictHead(nn.Module):
                         ACT2FN[config.mlp_activation],
                         nn.Linear(d_model, self.vocab_size),
                     )
-        self.softmax = nn.LogSoftmax(dim=-1)
+        self.logsoftmax = nn.LogSoftmax(dim=-1)
 
     def forward(
         self, 
@@ -87,7 +90,7 @@ class PredictHead(nn.Module):
             pooled_embedding = self.dropout(pooled_embedding)
             output = self.projection(pooled_embedding)      # (bs, num_patches, vocab_size)
 
-        return self.softmax(output)                         # (bs, num_patches, vocab_size)
+        return self.logsoftmax(output)                      # (bs, num_patches, vocab_size)
 
 
 class PretrainHead(nn.Module):
@@ -202,32 +205,46 @@ class PatchTSTForSpikingActivity(nn.Module):
 
     def forward(
         self,
-        spikes:             torch.LongTensor,                   # (bs, seq_len, n_input_channels)
-        targets:            Optional[torch.Tensor] = None,      # (bs, seq_len)
+        spikes:             torch.FloatTensor,                  # (bs, seq_len, n_input_channels)
+        spikes_mask:        torch.LongTensor,                   # (bs, seq_len)
+        spikes_lengths:     Optional[torch.LongTensor] = None,  # (bs)
+        targets:            Optional[torch.LongTensor] = None,  # (bs, seq_len)
         targets_lengths:    Optional[torch.LongTensor] = None,  # (bs)
     ) -> PatchTSTOutput:
 
         outputs = self.encoder(spikes)   
-        mask = outputs.mask
-        patch_input = outputs.patch_input      
         embedding = outputs.last_hidden_state   # (bs, n_input_channels, num_patches, d_model)
-        preds = self.decoder(embedding)        # (bs, num_patches, vocab_size) or (bs, num_input_channels, num_patches, patch_size)
-        
+        preds = self.decoder(embedding)         # (bs, num_patches, vocab_size) or (bs, num_input_channels, num_patches, patch_size)
 
-        # Compute the loss over unmasked outputs
         if self.method == "ssl":
-            loss = (self.loss_fn(preds, patch_input) * mask.unsqueeze(-1).expand_as(preds)).sum()
+            # Include padding after patching in mask
+            mask = outputs.mask # Mask is True for masked patches
+            spikes_mask = spikes_mask.unfold(dimension=-1, size=self.encoder.patchifier.patch_length, step=self.encoder.patchifier.patch_stride).prod(-1).bool() # True for patches without padding
+            mask = mask & spikes_mask.unsqueeze(1)  
+            # Compute the loss only over masked patches that are not padded
+            loss = (self.loss_fn(preds, outputs.patch_input) * mask.unsqueeze(-1).expand_as(preds)).sum()
             n_examples = mask.sum()
+
+            return PatchTSTOutput(
+                loss=loss,
+                n_examples=n_examples,
+                preds=preds,
+                patch_input=outputs.patch_input,
+                mask=mask,
+            )
+
         elif self.method == "ctc":
-            loss = self.loss_fn(preds.transpose(0,1), targets, target_lengths=targets_lengths)
-            n_examples = torch.Tensor(len(targets)).to(loss.device, torch.long)
-
-        return PatchTSTOutput(
-            loss=loss,
-            n_examples=n_examples,
-            preds=preds,
-        )
-
+            # Adjust lenghts after patching
+            spikes_lengths = (1 + (spikes_lengths - self.encoder.patchifier.patch_length) / self.encoder.patchifier.patch_stride).trunc().to(spikes_lengths.dtype)
+            loss = self.loss_fn(log_probs=preds.transpose(0,1), targets=targets, input_lengths=spikes_lengths, target_lengths=targets_lengths).sum()
+            torch.save({"p": preds, "t": targets, "il": spikes_lengths, "tl": targets_lengths},"b.pth")
+            n_examples = torch.tensor(len(targets), device=loss.device, dtype=torch.long)
+            return PatchTSTOutput(
+                loss=loss,
+                n_examples=n_examples,
+                preds=preds,
+            )
+        
 
     def save_checkpoint(self, save_dir):
         torch.save(self.encoder.state_dict(), os.path.join(save_dir,"encoder.bin"))

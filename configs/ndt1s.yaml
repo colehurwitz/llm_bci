@@ -9,7 +9,7 @@ encoder:
   masker:
     active: true         
     mode: full          # full to zero out randomly in the spikes matrix. timestep to zero out randomly full timesteps. neuron to zero out full neurons
-    ratio: 0.1         # ratio of data to predict
+    ratio: 0.25          # ratio of data to predict
     zero_ratio: 1.0     # of the data to predict, ratio of zeroed out
     random_ratio: 1.0   # of the not zeroed, ratio of randomly replaced
     expand_prob: 0.0    # probability of expanding the mask 
@@ -17,12 +17,12 @@ encoder:
 
   # Context available for each timestep
   context:
-    forward: -1
+    forward: 0
     backward: -1
 
   # Normalize and add noise
   norm_and_noise:
-    active: true
+    active: false
     smooth_sd: 2                # gaussian smoohing  
     norm: "zscore"              # which normalization layer to use (null/layernorm/scalenorm/zscore)
     eps: 1.e-7                  # avoid dividing by zero when normalizing padded spikes     
@@ -52,15 +52,15 @@ encoder:
     max_spikes: 0         # max number of spikes in a single time bin
 
     stack:
-      active: true       # wether to stack consecutive timesteps
+      active: false       # wether to stack consecutive timesteps
       size: 32            # number of consecutive timesteps to stack
       stride: 4           # stacking stride
 
 
   # Transformer
   transformer:
-    n_layers: 5           # number of transformer layers
-    hidden_size: 1024     # hidden space of the transformer
+    n_layers: 3           # number of transformer layers
+    hidden_size: 128     # hidden space of the transformer
     use_scalenorm: false  # use scalenorm  instead of layernorm
     use_rope: false       # use rotary postional encoding
     rope_theta: 10000.0   # rope angle of rotation
@@ -69,7 +69,7 @@ encoder:
     attention_bias: true  # learn bias in the attention layers
 
     act: gelu             # activiation function in mlp layers
-    inter_size: 2048      # intermediate dimension in the mlp layers
+    inter_size: 256       # intermediate dimension in the mlp layers
     mlp_bias: true        # learn bias in the mlp layers
     
     dropout: 0.4          # dropout in transformer layers
@@ -77,8 +77,8 @@ encoder:
 
   # Projection to factor space
   factors:  
-    active: true             # project from hidden_size to factors
-    size: 1024                  # factors size  
+    active: false             # project from hidden_size to factors
+    size: 128                 # factors size  
     act: relu                 # activation function after projecting to factors
     bias: true                # use bias in projection to factors
     dropout: 0.2              # dropout in projection to factors

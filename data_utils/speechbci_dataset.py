@@ -14,6 +14,7 @@ from g2p_en import G2p
 """ Load competition data from ".mat" format.
 INPUTS
     data_dir: directory to load the data from
+    date_idxs: list of date indexes to keep
     zscore: wether to zscore the data by blocks
     splits: name of the split subfolders
     features: name of the features to extract
@@ -33,6 +34,7 @@ OUTPUTS
 """
 def load_competition_data(
     data_dir:   str, 
+    date_idxs:  Optional[List[int]] = None,
     zscore:     Optional[bool]      = False, 
     splits:     Optional[List[str]] = ["train","test","competitionHoldOut"], 
     features:   Optional[List[str]] = ["tx1","spikePow"], 
@@ -89,15 +91,22 @@ def load_competition_data(
 
     # Index the dates and the blocks
     all_blocks = set([row["block"]  for split in splits for row in dataset_dict[split]])
-    all_dates = set([row["date"]  for split in splits for row in dataset_dict[split]])
-        
+    all_dates = sorted(set([row["date"]  for split in splits for row in dataset_dict[split]]))
+
+    if date_idxs is None:
+        date_idxs = list(range(len(all_dates)))
+
     d_to_i = {d: i for i, d in enumerate(all_dates)} # date (tuple) to index (int)
     b_to_i = {b: i for i, b in enumerate(all_blocks)} # block (int) to index (int)
     for split in splits:
+        keep_idx = []
         for i, row in enumerate(dataset_dict[split]):
-            dataset_dict[split][i]["block_idx"] = np.asarray(b_to_i[row["block"]])
-            dataset_dict[split][i]["date_idx"]  = np.asarray(d_to_i[row["date"]])
-
+            if d_to_i[row["date"]] in date_idxs:
+                dataset_dict[split][i]["block_idx"] = np.asarray(b_to_i[row["block"]])
+                dataset_dict[split][i]["date_idx"]  = np.asarray(d_to_i[row["date"]])
+                keep_idx.append(i)
+        # keep only the selected sessions by date_idx
+        dataset_dict[split] = [dataset_dict[split][i] for i in keep_idx]
     return dataset_dict
 
 
@@ -136,7 +145,7 @@ def create_phonemes_ctc_labels(
     punctuation = string.punctuation.replace("'","")
     for split in dataset:
         for i, row in enumerate(dataset[split]):
-            phonemes = np.asarray(s_to_p(row["sentence"].translate(str.maketrans("","",punctuation)).lower().strip()))
+            phonemes = s_to_p(row["sentence"].translate(str.maketrans("","",punctuation)).lower().strip())
             dataset[split][i]["phonemes"] = phonemes
             dataset[split][i]["phonemes_idx"] = np.asarray(p_to_i(phonemes))
 

@@ -3,22 +3,22 @@ model_class: PatchTST
 encoder:
   from_pt: null
   num_input_channels: 128
-  context_length: 200
-  patch_length: 5
-  patch_stride: 5
+  context_length: 45
+  patch_length: 16
+  patch_stride: 16
   num_hidden_layers: 3
   d_model: 128
-  num_attention_heads: 16
+  num_attention_heads: 8
   share_embedding: True
   channel_attention: False
   ffn_dim: 256
   norm_type: "batchnorm" 
   norm_eps: 1.e-5
-  attention_dropout: 0.2
-  dropout: 0.2
+  attention_dropout: 0.4
+  # dropout: 0.2    # for pretrain head
   positional_dropout: 0.0
   path_dropout: 0.0
-  ff_dropout: 0.0
+  ff_dropout: 0.4
   bias: True
   activation_function: gelu
   pre_norm: True
@@ -28,7 +28,7 @@ encoder:
   scaling: null # std/mean/null
   do_mask_input: True
   mask_type: random
-  random_mask_ratio: 0.4
+  random_mask_ratio: 0.5
   channel_consistent_masking: false
   # unmasked_channel_indices
   mask_value: 0
@@ -38,8 +38,8 @@ decoder:
   from_pt: null
   share_projection: true
   pooling_type: mean
-  head_dropout: 0.1
-  mlp_decoder: True
+  head_dropout: 0.0
+  mlp_decoder: false
   mlp_activation: gelu
   # distribution_output 
   # loss: None,

@@ -36,16 +36,16 @@ def word_error_count(preds_0, targets_0):
     return errors, words    
     
     
-""" Convert prediciton of Neural Encoder to phonograms
+""" Convert prediciton of Neural Encoder to phonemes
 """
 def format_ctc(pred, vocab, blank_id):
-    phonogram = []
+    phonemes = []
     last = -1
     for idx in pred:
-        if idx != last and id != blank_id:
-            phonogram.append(vocab[idx])
+        if idx != last and idx != blank_id:
+            phonemes.append(vocab[idx])
             last = deepcopy(idx)
-    return phonogram
+    return phonemes
 
 """ Get RMS between predicted rates and smoothed spiking data
 """

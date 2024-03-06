@@ -1,4 +1,6 @@
 import yaml
+import os
+import sys
 import json
 import torch
 from importlib import reload as rl
@@ -23,27 +25,30 @@ import models.ndt1
 from models.trainer import Trainer, default_trainer_config
 
 kwargs = {
-    "training.num_epochs": "1", "training.train_batch_size": "2", "training.test_batch_size": "2",
+    "training.num_epochs": "200", "training.train_batch_size": "32", "training.test_batch_size": "32",
     "optimizer.gradient_accumulation_steps": "1",
-    "training.eval_every": "50", "training.save_every": "50", 
-    "data.train_len": "4000", "data.test_len": "4000",
+    "training.eval_every": "500", "training.save_every": "500", 
+    "data.train_len": "-1", "data.test_len": "-1",
     "model": "include:configs/ndt1s.yaml",
-    "data.data_name": "speechbci",
+    "method.model_kwargs.loss": "mse",
+    "data.data_name": "maze",
 }
+from_pt = "pt_checkpoints/test/STEP5499"
 
 config_file = "configs/trainer_autoregressive.yaml"
 config = update_config(default_trainer_config(), config_file)
 config = update_config(config, config_from_kwargs(kwargs))
+config = DictConfig(torch.load(os.path.join(from_pt, "trainer_config.pth")))
 
 # # Load
-# if config.data.data_name == "maze":
-#         dataset = torch.load(config.data.data_file)
-# elif config.data.data_name == "speechbci":
-#     dataset = load_competition_data(config.data.dataset_dir, **config.data)
-#     if "vocab_file" in config["data"] and config.data.vocab_file is not None:
-#         blank_id = config.method.model_kwargs.blank_id
-#         vocab = json.load(open(config.data.vocab_file,"r"))
-#         dataset = create_phonemes_ctc_labels(dataset, config.data.vocab_file)
+if config.data.data_name == "maze":
+        dataset = torch.load(config.data.data_file)
+elif config.data.data_name == "speechbci":
+    dataset = load_competition_data(config.data.dataset_dir, **config.data)
+    if "vocab_file" in config["data"] and config.data.vocab_file is not None:
+        blank_id = config.method.model_kwargs.blank_id
+        vocab = json.load(open(config.data.vocab_file,"r"))
+        dataset = create_phonemes_ctc_labels(dataset, config.data.vocab_file)
 
 # Adjust models based on dataset
 if config.model.model_class == "PatchTST":
@@ -83,6 +88,7 @@ elif config.model.model_class == "NDT1":
     config["model"]["encoder"]["embedder"]["n_channels"] = dataset["train"][0]["spikes"].shape[1]
 
 
+
 # print(yaml.dump(dict(config), allow_unicode=True, default_flow_style=False))
 
 rl(utils)
@@ -103,12 +109,16 @@ from models.trainer import Trainer
 
 
 
-
+# config["model"]["encoder"]["from_pt"] = from_pt
+# config["model"]["decoder"]["from_pt"] = from_pt
 config["verbosity"] = 0
 trainer = Trainer(config, dataset=dataset, metric_fns={"A": metric_1})#, "WER": wer})
+trainer.model.load_checkpoint(from_pt)
 di = iter(trainer.train_dataloader)
 ex = next(di)
-# preds = trainer.model.generate(**ex[0], max_new_bins=2)
+
+with torch.no_grad():
+    preds = trainer.model.generate(**ex[0], max_new_bins=128)
 
 trainer.train()
 
@@ -132,3 +142,10 @@ def metric_1(model, model_inputs, unused_inputs, outputs, **kwargs):
     return torch.tensor(0.0)
 
 
+b = torch.load("b.pth")
+inputs = b["inputs"]
+unused = b["unused"]
+outputs = b["outputs"]
+preds = outputs["preds"]
+targets = outputs["targets"]
+mask = outputs["mask"]

@@ -21,7 +21,7 @@ class PatchTSTOutput(ModelOutput):
     loss: Optional[torch.FloatTensor] = None
     n_examples: Optional[torch.LongTensor] = None
     preds: Optional[torch.FloatTensor] = None
-    mask: Optional[torch.FloatTensor] = None
+    mask: Optional[torch.LongTensor] = None
     patch_input: Optional[torch.FloatTensor] = None
 
 

@@ -22,7 +22,9 @@ DEFAULT_CONFIG = "configs/ndt1.yaml"
 class NDT1Output(ModelOutput):
     loss: Optional[torch.FloatTensor] = None
     n_examples: Optional[torch.LongTensor] = None
+    mask: Optional[torch.LongTensor] = None
     preds: Optional[torch.FloatTensor] = None
+    targets: Optional[torch.FloatTensor] = None
 
 
 # Create buffer of biggest possible context mask 
@@ -537,7 +539,7 @@ class NeuralEncoder(nn.Module):
     ) -> Tuple[torch.FloatTensor, torch.LongTensor]:    # [(bs, seq_len, hidden_size), (bs, seq_len, n_channels)]
         
         B, T, N = spikes.size() # batch size, fea len, n_channels
-        
+
         if self.int_spikes:
             spikes = spikes.to(torch.int64)
         
@@ -634,6 +636,9 @@ class NDT1(nn.Module):
         elif self.method == "ctc":
              self.loss_fn = nn.CTCLoss(reduction="none", blank=kwargs["blank_id"], zero_infinity=kwargs["zero_infinity"])
         
+        # Save config
+        self.config = config
+
 
     def forward(
         self, 
@@ -666,23 +671,42 @@ class NDT1(nn.Module):
             # Compute the loss only over masked timesteps that are not padded 
             loss = (self.loss_fn(preds, targets) * targets_mask).sum()
             n_examples = targets_mask.sum()
+
+            return NDT1Output(
+                loss=loss,
+                n_examples=n_examples,
+                preds=preds,
+                targets=targets,
+                mask=targets_mask,
+            )
+
         elif self.method == "autoregressive":
-            # Shift preds and targets to perform next timestep prediction
-            shift_mask = spikes_mask[:,1:]      # (bs, seq_len-1)
+            # Shift preds and targets to perform next timestep prediction. Assumes left padding
+            shift_mask = spikes_mask[:,:-1]      # (bs, seq_len-1)
             shift_preds = preds[:,:-1,:]        # (bs, seq_len-1, n_channels)
             shift_targets = targets[:,1:,:]     # (bs, seq_len-1, n_channels)
             # Compute the loss only over timesteps that are not padded 
             loss = (self.loss_fn(shift_preds, shift_targets) * shift_mask.unsqueeze(2) ).sum()
             n_examples = shift_mask.sum()
+
+            return NDT1Output(
+                loss=loss,
+                n_examples=n_examples,
+                preds=preds,
+                targets=targets,
+                mask=spikes_mask,
+            )
+
         elif self.method == "ctc":
             loss = self.loss_fn(log_probs=preds.transpose(0,1), targets=targets, input_lengths=spikes_lengths, target_lengths=targets_lengths).sum()
             n_examples = torch.tensor(len(targets), device=loss.device, dtype=torch.long)
 
-        return NDT1Output(
-            loss=loss,
-            n_examples=n_examples,
-            preds=preds,
-        )
+            return NDT1Output(
+                loss=loss,
+                n_examples=n_examples,
+                preds=preds,
+                targets=targets,
+            )
 
 
     def generate(
@@ -698,6 +722,14 @@ class NDT1(nn.Module):
         max_new_bins:       Optional[int]               = 16,        
     ) -> NDT1Output:      
 
+        # Deactivate masking and noising during inference
+        prev_mask = self.encoder.mask
+        prev_white= self.encoder.norm_and_noise.white_noise_sd
+        prev_offset = self.encoder.norm_and_noise.constant_offset_sd
+        self.encoder.mask = False
+        self.encoder.norm_and_noise.white_noise_sd = None
+        self.encoder.norm_and_noise.constant_offset_sd = None
+        
         preds = []
 
         inputs = spikes
@@ -712,17 +744,21 @@ class NDT1(nn.Module):
             inputs_timestamp = torch.cat((inputs_timestamp,inputs_timestamp[:,-1:]+1),dim=1) # (bs, seq_len+i+1)
             preds.append(new_bins[:,0,:])
 
-        
+        self.encoder.mask = prev_mask
+        self.encoder.norm_and_noise.white_noise_sd = prev_white
+        self.encoder.norm_and_noise.constant_offset_sd = prev_offset
+
         return torch.stack(preds, 1)    # (bs, max_new_bins, n_channels)
 
 
     def save_checkpoint(self, save_dir):
         torch.save(self.encoder.state_dict(), os.path.join(save_dir,"encoder.bin"))
+        torch.save(dict(self.config.encoder), os.path.join(save_dir,"encoder_config.yaml"))
         torch.save(self.decoder.state_dict(), os.path.join(save_dir,"decoder.bin"))
 
     def load_checkpoint(self, load_dir):
-        self.encoder.load_state_dict(torch.load(os.path.join(save_dir,"encoder.bin")))
-        self.decoder.load_state_dict(torch.load(os.path.join(save_dir,"decoder.bin")))
+        self.encoder.load_state_dict(torch.load(os.path.join(load_dir,"encoder.bin")))
+        self.decoder.load_state_dict(torch.load(os.path.join(load_dir,"decoder.bin")))
 
 
 

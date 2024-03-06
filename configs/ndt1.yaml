@@ -77,8 +77,8 @@ encoder:
 
   # Projection to factor space
   factors:  
-    active: true             # project from hidden_size to factors
-    size: 1024                  # factors size  
+    active: true              # project from hidden_size to factors
+    size: 16                  # factors size  
     act: relu                 # activation function after projecting to factors
     bias: true                # use bias in projection to factors
     dropout: 0.2              # dropout in projection to factors

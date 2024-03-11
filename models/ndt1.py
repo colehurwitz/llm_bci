@@ -29,17 +29,18 @@ class NDT1Output(ModelOutput):
 
 # Create buffer of biggest possible context mask 
 def create_context_mask(context_forward, context_backward, max_F) -> torch.LongTensor: # (max_seq_len, max_seq_len)
+    if context_forward == -2 and context_backward == -2:
+        return torch.ones(max_F, max_F).to(torch.int64)
 
-        if context_forward == -1 and context_backward == -1:
-            return torch.ones(max_F, max_F).to(torch.int64)
+    context_forward = context_forward if context_forward >= -1 else max_F
+    context_backward = context_backward if context_backward >= -1 else max_F
+    mask = (torch.triu(torch.ones(max_F, max_F), diagonal=-context_forward).to(torch.int64)).transpose(0, 1)
+    if context_backward >= -1:
+        back_mask = (torch.triu(torch.ones(max_F, max_F), diagonal=-context_backward).to(torch.int64))
+        mask = mask & back_mask
+        
+    return mask
 
-        context_forward = context_forward if context_forward >= 0 else max_F
-        context_backward = context_backward if context_backward >= 0 else max_F
-        mask = (torch.triu(torch.ones(max_F, max_F), diagonal=-context_forward).to(torch.int64)).transpose(0, 1)
-        if context_backward > 0:
-            back_mask = (torch.triu(torch.ones(max_F, max_F), diagonal=-context_backward).to(torch.int64))
-            mask = mask & back_mask
-        return mask
 
 # Copied from hf Llama
 # Precompute cos and sin for RoPE
@@ -417,11 +418,11 @@ class NeuralAttention(nn.Module):
 # Encoder layer: bidirectional self-attention + mlp
 class NeuralEncoderLayer(nn.Module):
     
-    def __init__(self, idx, max_F, config: DictConfig):
+    def __init__(self, idx, max_F, config: DictConfig, **kwargs):
         super().__init__()
 
         self.idx = idx
-        
+    
         # Architecture config
         self.use_rope = config.use_rope
 
@@ -441,7 +442,7 @@ class NeuralEncoderLayer(nn.Module):
         timestamp:  Optional[torch.LongTensor] = None,  # (bs, seq_len)          
     ) -> torch.FloatTensor :                            # (bs, seq_len, hidden_size)
         
-        # LN -> Attention -> Residual connectiob
+        # LN -> Attention -> Residual connection
         x = x + self.attn(self.ln1(x), attn_mask, timestamp if self.use_rope else None)
 
         # LN -> MLP -> Residual connection
@@ -505,6 +506,7 @@ class NeuralEncoder(nn.Module):
         self.int_spikes = config.embedder.mode == "embed"
         self.hidden_size = config.transformer.hidden_size
         self.n_layers = config.transformer.n_layers
+        self.method = kwargs["method"]
 
         # Masker
         self.mask = config.masker.active
@@ -522,7 +524,7 @@ class NeuralEncoder(nn.Module):
         self.embedder = NeuralEmbeddingLayer(self.hidden_size, config.embedder)
 
         # Transformer
-        self.layers = nn.ModuleList([NeuralEncoderLayer(idx, config.embedder.max_F, config.transformer) for idx in range(self.n_layers)])
+        self.layers = nn.ModuleList([NeuralEncoderLayer(idx, config.embedder.max_F, config.transformer, **kwargs) for idx in range(self.n_layers)])
         self.out_norm = ScaleNorm(self.hidden_size ** 0.5) if config.transformer.use_scalenorm else nn.LayerNorm(self.hidden_size) 
        
         # Out projection
@@ -534,6 +536,7 @@ class NeuralEncoder(nn.Module):
             spikes:             torch.FloatTensor,  # (bs, seq_len, n_channels)
             spikes_mask:        torch.LongTensor,   # (bs, seq_len)
             spikes_timestamp:   torch.LongTensor,   # (bs, seq_len)
+            spikes_lengths:   torch.LongTensor,   # (bs)
             block_idx:          Optional[torch.LongTensor] = None,   # (bs)
             date_idx:           Optional[torch.LongTensor] = None,   # (bs)
     ) -> Tuple[torch.FloatTensor, torch.LongTensor]:    # [(bs, seq_len, hidden_size), (bs, seq_len, n_channels)]
@@ -562,8 +565,8 @@ class NeuralEncoder(nn.Module):
         context_mask = self.context_mask[:T,:T].to(x.device).unsqueeze(0).expand(B,T,T)
         spikes_mask = spikes_mask.unsqueeze(1).expand(B,T,T)
         self_mask = torch.eye(T).to(x.device, torch.int64).expand(B,T,T) # hack so that even padded spikes attend to themselves and avoid attention issues
-        attn_mask = self_mask | (context_mask & spikes_mask)
-        
+        attn_mask = self_mask | context_mask & spikes_mask
+
         # Forward transformer
         for idx, layer in enumerate(self.layers):
             x = layer(x, attn_mask=attn_mask, timestamp=spikes_timestamp)
@@ -591,7 +594,7 @@ class NDT1(nn.Module):
         if encoder_pt_path is not None:
             encoder_config = os.path.join(encoder_pt_path, "encoder_config.yaml")
             config["encoder"] = update_config(config.encoder, encoder_config)
-        self.encoder = NeuralEncoder(config.encoder)
+        self.encoder = NeuralEncoder(config.encoder, method=self.method)
 
         # Load encoder weights
         if encoder_pt_path is not None:
@@ -599,12 +602,12 @@ class NDT1(nn.Module):
 
 
         # Build decoder
-        if self.method == "ssl":
+        if self.method == "mlm":
             assert config.encoder.masker.active, "Can't pretrain with inactive masking"
             assert not config.encoder.embedder.stack.active, "Can't pretrain with stacked inputs"
             n_outputs = config.encoder.embedder.n_channels
         elif self.method == "autoregressive":
-            assert config.encoder.context.forward == 0, "Can't train autoregressive with forward context"
+            assert config.encoder.context.forward == 0, "Autoregressive training requires context.forward == 0"
             assert not config.encoder.embedder.stack.active, "Can't train autoregressive with stacked inputs"
             n_outputs = config.encoder.embedder.n_channels
         elif self.method == "ctc":
@@ -615,24 +618,26 @@ class NDT1(nn.Module):
         decoder_layers = []
         decoder_layers.append(nn.Linear(self.encoder.out_proj.out_size, n_outputs))
 
-        if self.method in ["sft","autoregressive"] and kwargs["loss"] == "poisson_nll" and not kwargs["use_lograte"]:
-            decoder_layers.append(nn.ReLU()) # If we're not using lograte, we need to feed positive rates
+        if self.method in ["sft","autoregressive"] and (kwargs["loss"] == "mse" or not kwargs["log_input"]):
+            decoder_layers.append(nn.ReLU()) # If we're not using loginput, we need to feed positive rates. If we are using MSE we need to feed positive spikes
         elif self.method == "ctc":
             decoder_layers.append(nn.LogSoftmax(dim=-1))  # CTC loss asks for log-softmax-normalized logits
         self.decoder = nn.Sequential(*decoder_layers)
 
         # Load decoder weights
-        if config.decoder.from_pt is not None:
+        if config["decoder"].pop("from_pt", None) is not None:
             self.decoder.load_state_dict(torch.load(os.path.join(config.decoder.from_pt,"decoder.bin")))
 
         # Build loss function
-        if self.method in ["ssl","autoregressive"]:
-            if kwargs["loss"] == "poisson_nll":
-                self.loss_fn = nn.PoissonNLLLoss(reduction="none", log_input=kwargs["use_lograte"])
-            elif kwargs["loss"] == "mse":
+        if self.method in ["mlm","autoregressive"]:
+            self.loss_name = kwargs["loss"]
+            self.log_input = kwargs["log_input"]
+            if self.loss_name == "poisson_nll":
+                self.loss_fn = nn.PoissonNLLLoss(reduction="none", log_input=self.log_input)
+            elif self.loss_name == "mse":
                 self.loss_fn = nn.MSELoss(reduction="none")
             else:   
-                raise Exception(f"Loss {kwargs['loss']} not implemented yet for ssl")
+                raise Exception(f"Loss {kwargs['loss']} not implemented yet for mlm")
         elif self.method == "ctc":
              self.loss_fn = nn.CTCLoss(reduction="none", blank=kwargs["blank_id"], zero_infinity=kwargs["zero_infinity"])
         
@@ -645,27 +650,26 @@ class NDT1(nn.Module):
         spikes:           torch.FloatTensor,  # (bs, seq_len, n_channels)
         spikes_mask:      torch.LongTensor,   # (bs, seq_len)
         spikes_timestamp: torch.LongTensor,   # (bs, seq_len)
-        spikes_lengths:   Optional[torch.LongTensor] = None,   # (bs)
+        spikes_lengths:   torch.LongTensor,   # (bs)
         targets:          Optional[torch.FloatTensor] = None,  # (bs, tar_len) 
         targets_lengths:  Optional[torch.LongTensor] = None,   # (bs)
         block_idx:        Optional[torch.LongTensor] = None,   # (bs)
         date_idx:         Optional[torch.LongTensor] = None,   # (bs)
     ) -> NDT1Output:      
 
-        if self.method in ["ssl","autoregressive"]:
+        if self.method in ["mlm","autoregressive"]:
+            assert targets is None, "No targets needed for ssl"
             targets = spikes.clone()
-            if self.encoder.int_spikes:
-                targets = targets.to(torch.int64)
 
-        # Encode neural data
-        x, targets_mask = self.encoder(spikes, spikes_mask, spikes_timestamp, block_idx, date_idx)
-        spikes_lengths = self.encoder.embedder.get_stacked_lens(spikes_lengths)
+        # Encode neural data. x is the masked embedded spikes. targets_mask is True for masked bins
+        x, targets_mask = self.encoder(spikes, spikes_mask, spikes_timestamp, spikes_lengths, block_idx, date_idx)
+        spikes_lengths = self.encoder.embedder.get_stacked_lens(spikes_lengths) # Corrected lengths after stacking
 
-        # Transform neural embeddings into rates/logits
-        preds = self.decoder(x)     # (bs, seq_len, vocab_size) or (bs, seq_len, n_channels)
+        # Predict rates/ctc-logits from embeddedings
+        preds = self.decoder(x)     # (bs, seq_len, n_channels/vocab_size)
 
         # Compute the loss over unmasked preds
-        if self.method == "ssl":
+        if self.method == "mlm":
             # Include padding in mask
             targets_mask = targets_mask & spikes_mask.unsqueeze(2) 
             # Compute the loss only over masked timesteps that are not padded 
@@ -687,7 +691,7 @@ class NDT1(nn.Module):
             shift_targets = targets[:,1:,:]     # (bs, seq_len-1, n_channels)
             # Compute the loss only over timesteps that are not padded 
             loss = (self.loss_fn(shift_preds, shift_targets) * shift_mask.unsqueeze(2) ).sum()
-            n_examples = shift_mask.sum()
+            n_examples = shift_mask.sum() * targets.size(2)
 
             return NDT1Output(
                 loss=loss,
@@ -711,12 +715,56 @@ class NDT1(nn.Module):
 
     def generate(
         self, 
-        spikes:             torch.FloatTensor,                  # (bs, seq_len, n_channels)
-        spikes_mask:        torch.LongTensor,                   # (bs, seq_len)
-        spikes_timestamp:   torch.LongTensor,                   # (bs, seq_len)
+        spikes:             Optional[torch.FloatTensor] = None, # (bs, seq_len, n_channels)
+        spikes_mask:        Optional[torch.LongTensor]  = None, # (bs, seq_len)
+        spikes_timestamp:   Optional[torch.LongTensor]  = None, # (bs, seq_len)
         spikes_lengths:     Optional[torch.LongTensor]  = None, # (bs)
-        targets:            Optional[torch.FloatTensor] = None, # (bs, tar_len) 
-        targets_lengths:    Optional[torch.LongTensor]  = None, # (bs)
+        block_idx:          Optional[torch.LongTensor]  = None, # (bs)
+        date_idx:           Optional[torch.LongTensor]  = None, # (bs)
+        max_new_bins:       Optional[int]               = 16,        
+    ) -> NDT1Output:      
+
+        # Deactivate masking and noising during inference
+        prev_mask = self.encoder.mask
+        prev_white= self.encoder.norm_and_noise.white_noise_sd
+        prev_offset = self.encoder.norm_and_noise.constant_offset_sd
+        self.encoder.mask = False
+        self.encoder.norm_and_noise.white_noise_sd = None
+        self.encoder.norm_and_noise.constant_offset_sd = None
+        
+        preds = []
+
+        inputs = spikes if spikes is not None else torch.ones(1,1,self.config.encoder.embedder.n_channels)   # (bs, seq_len+i+1, n_channels)
+        inputs_mask = spikes_mask if spikes_mask is not None else torch.ones(1,1)
+        inputs_timestamp = spikes_timestamp if spikes_timestamp is not None else torch.zeros(1,1)
+        for i in range(max_new_bins):
+            outputs = self(spikes=inputs, spikes_mask=inputs_mask, spikes_timestamp=inputs_timestamp, spikes_lengths=spikes_lengths)
+            new_bins = outputs.preds[:,-1:,:]    # (bs, 1, n_channels)
+            if self.loss_name == "poisson_nll":
+                if self.log_input:
+                    new_bins = new_bins.exp()
+                # If we are predicting rates we have to sample from these rates
+                new_bins = torch.poisson(new_bins)
+            inputs = torch.cat((inputs,new_bins),dim=1)  # (bs, seq_len+i+1, n_channels)
+            # Assumes left padding
+            inputs_mask = torch.cat((inputs_mask,torch.ones_like(inputs_mask[:,-1:])),dim=1)  # (bs, seq_len+i+1)
+            inputs_timestamp = torch.cat((inputs_timestamp,inputs_timestamp[:,-1:]+1),dim=1) # (bs, seq_len+i+1)
+            preds.append(new_bins[:,0,:])
+
+        self.encoder.mask = prev_mask
+        self.encoder.norm_and_noise.white_noise_sd = prev_white
+        self.encoder.norm_and_noise.constant_offset_sd = prev_offset
+
+        return torch.stack(preds, 1)    # (bs, max_new_bins, n_channels)
+
+
+
+    def generate2(
+        self, 
+        spikes:             Optional[torch.FloatTensor] = None, # (bs, seq_len, n_channels)
+        spikes_mask:        Optional[torch.LongTensor]  = None, # (bs, seq_len)
+        spikes_timestamp:   Optional[torch.LongTensor]  = None, # (bs, seq_len)
+        spikes_lengths:     Optional[torch.LongTensor]  = None, # (bs)
         block_idx:          Optional[torch.LongTensor]  = None, # (bs)
         date_idx:           Optional[torch.LongTensor]  = None, # (bs)
         max_new_bins:       Optional[int]               = 16,        
@@ -736,19 +784,28 @@ class NDT1(nn.Module):
         inputs_mask = spikes_mask
         inputs_timestamp = spikes_timestamp
         for i in range(max_new_bins):
-            outputs = self(spikes=inputs, spikes_mask=inputs_mask, spikes_timestamp=inputs_timestamp)
+            inputs = torch.cat((inputs,torch.zeros_like(inputs)[:,:1,:]),dim=1) if inputs is not None else torch.ones(1,1,self.config.encoder.embedder.n_channels)   # (bs, seq_len+i+1, n_channels)
+            inputs_mask = torch.cat((inputs_mask,torch.ones_like(inputs_mask[:,-1:])),dim=1)  if inputs_mask is not None else  torch.ones(1,1)  # (bs, seq_len+i+1)
+            inputs_timestamp = torch.cat((inputs_timestamp,inputs_timestamp[:,-1:]+1),dim=1) if inputs_timestamp is not None else torch.zeros(1,1) # (bs, seq_len+i+1)
+
+            outputs = self(spikes=inputs, spikes_mask=inputs_mask, spikes_timestamp=inputs_timestamp, spikes_lengths=spikes_lengths)
             new_bins = outputs.preds[:,-1:,:]    # (bs, 1, n_channels)
-            inputs = torch.cat((inputs,new_bins),dim=1)  # (bs, seq_len+i+1, n_channels)
+            if self.loss_name == "poisson_nll":
+                if self.log_input:
+                    new_bins = new_bins.exp()
+                # If we are predicting rates we have to sample from these rates
+                new_bins = torch.poisson(new_bins)
+
             # Assumes left padding
-            inputs_mask = torch.cat((inputs_mask,torch.ones_like(inputs_mask[:,-1:])),dim=1)  # (bs, seq_len+i+1)
-            inputs_timestamp = torch.cat((inputs_timestamp,inputs_timestamp[:,-1:]+1),dim=1) # (bs, seq_len+i+1)
-            preds.append(new_bins[:,0,:])
+            inputs[:,-1:,:] = new_bins
+            preds.append(new_bins)
+
 
         self.encoder.mask = prev_mask
         self.encoder.norm_and_noise.white_noise_sd = prev_white
         self.encoder.norm_and_noise.constant_offset_sd = prev_offset
 
-        return torch.stack(preds, 1)    # (bs, max_new_bins, n_channels)
+        return torch.cat(preds, dim=1)    # (bs, max_new_bins, n_channels)
 
 
     def save_checkpoint(self, save_dir):

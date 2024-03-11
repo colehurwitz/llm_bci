@@ -64,6 +64,7 @@ class Trainer():
         eval_metric_fns:    Optional[Dict[str,Callable]]    = None,
     ):  
         self.config = update_config(default_trainer_config(), config) 
+        
         self.verbosity = config.verbosity
         self.init_wandb()
         self.reset_seeds()
@@ -73,6 +74,8 @@ class Trainer():
             step_scheduler_with_optimizer=config.optimizer.scheduler in ["linear","cosine"], 
             split_batches=True,
         )
+        
+        self.print_v(yaml.dump(dict(self.config), allow_unicode=True, default_flow_style=False), verbosity=0) 
 
         self.prepare_logging()
 
@@ -86,7 +89,7 @@ class Trainer():
 
         self.prepare_for_distributed_training()
         
-        self.metric_kwargs = config.method.metric_kwargs
+        self.metric_kwargs = self.config.method.metric_kwargs
         self.metric_fns = metric_fns if metric_fns else {}
         self.eval_metric_fns = eval_metric_fns if eval_metric_fns else {}
         
@@ -302,10 +305,9 @@ class Trainer():
         config = self.config
 
         self.print_v(f"Starting run {config.savestring} with config: ", verbosity=0)
-        self.print_v(yaml.dump(dict(config), allow_unicode=True, default_flow_style=False), verbosity=0) 
-
+    
         # Train
-        global_step = 0
+        global_step = 1
         
         # Train metrics
         train_loss = []
@@ -319,7 +321,7 @@ class Trainer():
             for step, (model_inputs, unused_inputs) in enumerate(tqdm(self.train_dataloader) if self.verbosity <= 1 else self.train_dataloader):
 
                 # Perform gradient accumulation
-                if (global_step + 1) % config.optimizer.gradient_accumulation_steps == 0:
+                if (global_step-1) % config.optimizer.gradient_accumulation_steps == 0:
                     outputs = self.model(**model_inputs)
                     loss = outputs.loss
                     examples = outputs.n_examples
@@ -350,7 +352,7 @@ class Trainer():
 
 
                 # Evaluation condition
-                if config.training.eval_every and (global_step + 1) % config.training.eval_every == 0:
+                if config.training.eval_every and global_step % config.training.eval_every == 0:
 
                     self.print_v(f"Evaluation at step {global_step}", verbosity=1)
                     test_avg_loss, test_avg_metrics = self.evaluate(self.eval_metric_fns)
@@ -389,7 +391,7 @@ class Trainer():
                     self.model.train()     
 
                 # Save checkpoints
-                if config.training.save_every and (global_step + 1) % config.training.save_every == 0:
+                if config.training.save_every and global_step % config.training.save_every == 0:
                     save_to_path = os.path.join(self.checkpoint_dir,f"STEP{global_step}")
                     if not os.path.exists(save_to_path) and self.accelerator.is_main_process:
                         os.makedirs(save_to_path)

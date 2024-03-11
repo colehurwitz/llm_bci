@@ -25,7 +25,7 @@ class SpikingDataset(Dataset):
         dataset: Dict[str,List[Any]], 
         length: Optional[int] = None
     ):  
-        self.dataset = dataset[:length]
+        self.dataset = dataset[:length] if length is not None else dataset
 
     def __len__(self):
         return len(self.dataset)

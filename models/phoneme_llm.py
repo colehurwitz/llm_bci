@@ -170,22 +170,24 @@ class PhonemeLLM(nn.Module):
 
     """ Open ended generation
     """
-    def predict(
+    def generate(
             self,
             input_ids:          torch.LongTensor,                   # (batch, seq_len)
             attention_mask:     torch.LongTensor,                   # (batch, seq_len)
             phoneme_logits:     List[torch.FloatTensor],            # batch * [(seq_len_phon, vocab)]
             phonemes_start:     torch.LongTensor,                   # (batch)
             phonemes_end:       torch.LongTensor,                   # (batch)
+            input_embeds:       Optional[torch.FloatTensor] = None, # (batch, seq_len, hidden_size)
             synced_gpus:        Optional[bool]      = None,
             **gen_config:       DictConfig,
         ) -> List[torch.LongTensor]:  
          
         # Embed logits and merge with text embeddings
-        inputs_embeds = self.prepare_embeds(input_ids, phoneme_logits, phonemes_start, phonemes_end)
+        if input_embeds is None:
+            inputs_embeds = self.prepare_embeds(input_ids, phoneme_logits, phonemes_start, phonemes_end)
 
         # LLM built-in generation
-        return self.llm.generate(inputs_embeds=inputs_embeds, **gen_config, synced_gpus=synced_gpus)
+        return self.llm.generate(inputs_embeds=inputs_embeds, attention_mask=attention_mask, **gen_config, synced_gpus=synced_gpus)
 
 
 

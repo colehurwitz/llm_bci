@@ -47,9 +47,9 @@ data:
 method:
 
   model_kwargs:
-    method_name: ssl
+    method_name: autoregressive2
 
-    use_lograte: true
+    log_input: true
     loss: poisson_nll # poisson_nll/mse(todo)
 
   dataset_kwargs: {}

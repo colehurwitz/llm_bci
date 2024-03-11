@@ -153,7 +153,7 @@ class PretrainHead(nn.Module):
         return self.post_proj(output)   # (bs, num_input_channels, num_patches, patch_size)
 
 
-METHOD2HEAD = {"ctc": PredictHead, "ssl": PretrainHead}
+METHOD2HEAD = {"ctc": PredictHead, "mlm": PretrainHead}
 
 class PatchTSTForSpikingActivity(nn.Module):
 
@@ -192,11 +192,11 @@ class PatchTSTForSpikingActivity(nn.Module):
 
 
         # Build loss function
-        if self.method == "ssl":
+        if self.method == "mlm":
             if kwargs["loss"] == "poisson_nll":
                 self.loss_fn = nn.PoissonNLLLoss(reduction="none", log_input=kwargs["use_lograte"])
             else:   
-                raise Exception(f"Loss {kwargs['loss']} not implemented yet for ssl")
+                raise Exception(f"Loss {kwargs['loss']} not implemented yet for mlm")
         elif self.method == "ctc":
             self.loss_fn = nn.CTCLoss(reduction="none", blank=kwargs["blank_id"], zero_infinity=kwargs["zero_infinity"])
         else:   
@@ -216,7 +216,7 @@ class PatchTSTForSpikingActivity(nn.Module):
         embedding = outputs.last_hidden_state   # (bs, n_input_channels, num_patches, d_model)
         preds = self.decoder(embedding)         # (bs, num_patches, vocab_size) or (bs, num_input_channels, num_patches, patch_size)
 
-        if self.method == "ssl":
+        if self.method == "mlm":
             # Include padding after patching in mask
             mask = outputs.mask # Mask is True for masked patches
             spikes_mask = spikes_mask.unfold(dimension=-1, size=self.encoder.patchifier.patch_length, step=self.encoder.patchifier.patch_stride).prod(-1).bool() # True for patches without padding

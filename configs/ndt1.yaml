@@ -17,8 +17,8 @@ encoder:
 
   # Context available for each timestep
   context:
-    forward: -1
-    backward: -1
+    forward: -2         # -1 for masking self, -2 for full
+    backward: -2        # -1 for masking self, -2 for full
 
   # Normalize and add noise
   norm_and_noise:
@@ -35,7 +35,7 @@ encoder:
     n_channels: 182       # number of neurons recorded 
     n_blocks: 24          # number of blocks of experiments
     n_dates: 24           # number of days of experiments
-    max_F: 1024           # max feature len in timesteps
+    max_F: 1024           # max spikes sequence len in timesteps
 
     mode: linear          # linear/embed/identity
     mult: 1               # embedding multiplier. hiddden_sizd = n_channels * mult

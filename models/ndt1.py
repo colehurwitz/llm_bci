@@ -722,6 +722,22 @@ class NDT1(nn.Module):
         block_idx:          Optional[torch.LongTensor]  = None, # (bs)
         date_idx:           Optional[torch.LongTensor]  = None, # (bs)
         max_new_bins:       Optional[int]               = 16,        
+    ) -> NDT1Output:   
+
+        if self.method = "mlm":
+            return self.generate_mlm(spikes, spikes_mask, spikes_timestamp, spikes_lengths, block_idx, date_idx, max_new_bins)
+        elif self.method = "autoregressive":
+            return self.generate_autoregressive(spikes, spikes_mask, spikes_timestamp, spikes_lengths, block_idx, date_idx, max_new_bins)
+
+    def generate_autoregressive(
+        self, 
+        spikes:             Optional[torch.FloatTensor] = None, # (bs, seq_len, n_channels)
+        spikes_mask:        Optional[torch.LongTensor]  = None, # (bs, seq_len)
+        spikes_timestamp:   Optional[torch.LongTensor]  = None, # (bs, seq_len)
+        spikes_lengths:     Optional[torch.LongTensor]  = None, # (bs)
+        block_idx:          Optional[torch.LongTensor]  = None, # (bs)
+        date_idx:           Optional[torch.LongTensor]  = None, # (bs)
+        max_new_bins:       Optional[int]               = 16,        
     ) -> NDT1Output:      
 
         # Deactivate masking and noising during inference
@@ -759,7 +775,7 @@ class NDT1(nn.Module):
 
 
 
-    def generate2(
+    def generate_mlm(
         self, 
         spikes:             Optional[torch.FloatTensor] = None, # (bs, seq_len, n_channels)
         spikes_mask:        Optional[torch.LongTensor]  = None, # (bs, seq_len)

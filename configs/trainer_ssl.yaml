@@ -15,16 +15,16 @@ dirs:
 # Training configuration
 training:
   num_epochs: 500
-  train_batch_size: 32
-  test_batch_size: 32    
+  train_batch_size: 16
+  test_batch_size: 16   
   shuffle_test_dataloader: true    # Shuffle test dataloader between epochs
 
   save_every: 1500 # Save checkpoint
-  eval_every: 250  # Eval model
+  eval_every: 500  # Eval model
 
 
 
-model: {}
+model: include:configs/ndt1s.yaml
 
 data:
   dataset_class: ssl
@@ -37,8 +37,9 @@ data:
   train_len: null     # used length of the train dataset. null to use all
   test_len: null      # used length of the test dataset. null to use all
 
-  data_name: speechbci # maze/speechbci
-  data_file: /home/gridsan/dbeneto/MAML-Soljacic_shared/BCI/data/maze_spikes.pth
+  data_load: file # file/speechbci
+  data_file: /home/gridsan/dbeneto/MAML-Soljacic_shared/BCI/data/ibl_choice_0.pth
+
   dataset_dir: /home/gridsan/dbeneto/MAML-Soljacic_shared/BCI/data/competitionData
   zscore: false
   features: ["tx1"]
@@ -47,7 +48,7 @@ data:
 method:
 
   model_kwargs:
-    method_name: autoregressive2
+    method_name: autoregressive
 
     log_input: true
     loss: poisson_nll # poisson_nll/mse(todo)

@@ -14,9 +14,9 @@ def main(args):
 
     # Load raw dataset and prepare specific metrics
     metric_fns = None
-    if config.data.data_name == "maze":
+    if config.data.data_load == "file":
         dataset = torch.load(config.data.data_file)
-    elif config.data.data_name == "speechbci":
+    elif config.data.data_load == "speechbci":
         dataset = load_competition_data(config.data.dataset_dir, **config.data)
         if "vocab_file" in config["data"] and config.data.vocab_file is not None:
             dataset = create_phonemes_ctc_labels(dataset, config.data.vocab_file)

@@ -259,12 +259,14 @@ class Trainer():
         INPUTS:
             additional_metric_fns: dict of metric functions to use for evaluation apart from 
             the training metric functions
+            eval_train_set: if set to True, the evaluation is performed over the train dataset
         OUTPUTS:
             Averaged test loss and averaged metrics.
     """
     def evaluate(
         self,
         additional_metric_fns: Optional[Dict[str,Callable]] = None,
+        eval_train_set: Optional[bool] = False,
     ):
         metric_fns = additional_metric_fns if additional_metric_fns else {}
         metric_fns.update(self.metric_fns)
@@ -276,7 +278,8 @@ class Trainer():
         
         self.model.eval()
 
-        for test_step, (model_inputs, unused_inputs) in enumerate(tqdm(self.test_dataloader) if self.verbosity <= 1 else self.test_dataloader):
+        dataloader = self.test_dataloader if not eval_train_set else self.train_dataloader
+        for test_step, (model_inputs, unused_inputs) in enumerate(tqdm(dataloader) if self.verbosity <= 1 else self.test_dataloader):
             
             with torch.no_grad() as A, self.accelerator.no_sync(self.model) as B:
                 outputs = self.model(**model_inputs)

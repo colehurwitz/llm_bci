@@ -434,11 +434,7 @@ def ft_pad_collate_fn(noise_config, mask_config, pad_id, split, batch):
     model_inputs["attention_mask"] = add_mask(mask_config, split, model_inputs["attention_mask"], model_inputs["phonemes_start"], model_inputs["phonemes_end"])
     prompt_inputs["attention_mask"] = add_mask(mask_config, split, prompt_inputs["attention_mask"], prompt_inputs["phonemes_start"], prompt_inputs["phonemes_end"])
     
-
-    if split == "train":
-        return model_inputs, [row["sentence"] for row in batch], [row["true_phonemes"] for row in batch], [row["pred_phonemes"] for row in batch]
-    elif split == "test":
-        return model_inputs, prompt_inputs, [row["sentence"] for row in batch], [row["true_phonemes"] for row in batch], [row["pred_phonemes"] for row in batch]
+    return model_inputs, prompt_inputs, [row["sentence"] for row in batch], [row["true_phonemes"] for row in batch], [row["pred_phonemes"] for row in batch]
 
 
 

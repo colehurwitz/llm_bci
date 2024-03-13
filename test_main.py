@@ -2,7 +2,10 @@ import yaml
 import os
 import sys
 import json
+import numpy as np
 import torch
+import torch.nn.functional as F
+from sklearn.metrics import r2_score
 import matplotlib.pyplot as plt
 from importlib import reload as rl
 from utils.config_utils import config_from_kwargs, update_config, DictConfig
@@ -26,32 +29,31 @@ import models.ndt1
 from models.trainer import Trainer, default_trainer_config
 
 all = []
-def metric_1(model, model_inputs, unused_inputs, outputs, **kwargs):
-    a = model_inputs
-    b = unused_inputs
-    c = outputs
-    torch.save({"inputs": a, "unused": b, "outputs": c}, "b.pth")
+def probe(model, model_inputs, unused_inputs, outputs, **kwargs):
+    a = {k: v.detach().cpu() for k,v in model_inputs.items()}
+    b = {k: v.detach().cpu() for k,v in unused_inputs.items()}
+    c = {k: v.detach().cpu() for k,v in outputs.items()}
     all.append({"inputs": a, "unused": b, "outputs": c})
     return torch.tensor(0.0)
 
 
 kwargs = {
-    "savestring": "test",
-    "training.num_epochs": "200", "training.train_batch_size": "64", "training.test_batch_size": "64",
+    "savestring": "ibl_choice_0_autor_small",
+    "training.num_epochs": "1000", "training.train_batch_size": "16", "training.test_batch_size": "16",
     "optimizer.gradient_accumulation_steps": "1",
-    "training.eval_every": "100", "training.save_every": "500", 
+    "training.eval_every": "500", "training.save_every": "500", 
     "data.train_len": "null", "data.test_len": "null",
     "model": "include:configs/ndt1s.yaml",
-    "data.data_name": "maze",
+    "data.data_load": "file",
 }
-config_file = "configs/trainer_ssl2.yaml"
+config_file = "configs/trainer_ssl.yaml"
 config = update_config(default_trainer_config(), config_file)
 config = update_config(config, config_from_kwargs(kwargs))
 
-# # # Load
-# if config.data.data_name == "maze":
+# # Load
+# if config.data.data_load == "file":
 #         dataset = torch.load(config.data.data_file)
-# elif config.data.data_name == "speechbci":
+# elif config.data.data_load == "speechbci":
 #     dataset = load_competition_data(config.data.dataset_dir, **config.data)
 #     if "vocab_file" in config["data"] and config.data.vocab_file is not None:
 #         blank_id = config.method.model_kwargs.blank_id
@@ -119,22 +121,23 @@ from models.trainer import Trainer
 
 # config["model"]["encoder"]["from_pt"] = from_pt
 # config["model"]["decoder"]["from_pt"] = from_pt
-config["savestring"] = "mlm_ndt_poisson"
-config["model"]["encoder"]["masker"]["active"] = True
-config["model"]["encoder"]["context"]["forward"] = -2
-config["method"]["model_kwargs"]["loss"] = "poisson_nll"
-config["method"]["model_kwargs"]["log_input"] = True
-config["method"]["model_kwargs"]["method_name"] = "mlm"
-config["training"]["eval_every"] = 100
-config["verbosity"] = 0
+# config["savestring"] = "mlm_ndt_poisson"
+# config["model"]["encoder"]["masker"]["active"] = True
+# config["model"]["encoder"]["context"]["forward"] = -2
+# config["method"]["model_kwargs"]["loss"] = "poisson_nll"
+# config["method"]["model_kwargs"]["log_input"] = True
+# config["method"]["model_kwargs"]["method_name"] = "mlm"
+# config["training"]["eval_every"] = 100
+# config["verbosity"] = 0
 
-from_pt = "pt_checkpoints/mlm_ndt_mse/STEP6000"
+from_pt = "pt_checkpoints/choice_0-bs-8-nl_3-hs_128-is_256-fa_false-d_0.4/STEP31500"
 config = DictConfig(torch.load(os.path.join(from_pt, "trainer_config.pth")))
 
 all = []
-trainer = Trainer(config, dataset=dataset, metric_fns={"A": metric_1})#, "WER": wer})
+trainer = Trainer(config, dataset=dataset, metric_fns={"A": probe})#, "WER": wer})
 trainer.model.load_checkpoint(from_pt)
 trainer.train()
+trainer.evaluate(eval_train_set=True)
 
 
 
@@ -153,11 +156,10 @@ def wer(model, model_inputs, unused_inputs, outputs, **kwargs):
 
 
 
-
-b = torch.load("b.pth")
 all_preds = []
 all_targets = []
 all_mask = []
+all_choice = []
 for b in all:
     inputs = b["inputs"]
     unused = b["unused"]
@@ -165,13 +167,94 @@ for b in all:
     preds = outputs["preds"]
     targets = outputs["targets"]
     mask = outputs["mask"]
+    choice = unused["choice"]
     all_preds.append(preds)
     all_targets.append(targets)
     all_mask.append(mask)
+    all_choice.append(choice)
 
-preds = torch.cat(all_preds,0)
-targets = torch.cat(all_targets,0)
-mask = torch.cat(all_mask,0)
+preds = torch.cat(all_preds,0).detach().cpu().exp()
+targets = torch.cat(all_targets,0).detach().cpu()
+mask = torch.cat(all_mask,0).detach().cpu()
+choice = torch.cat(all_choice,0).detach().cpu()
+
+preds = preds[:,:-1,:]
+targets = targets[:,1:,:]
+
+### PLOTTING CONDITION-AVERAGED AND SINGLE-TRIAL ###
+
+def gaussian_kernel(kernel_size, sigma):
+    kernel = np.exp(-(np.arange(-kernel_size//2, kernel_size//2 + 1)**2) / (2 * sigma**2))
+    kernel /= kernel.sum()
+    return torch.tensor(kernel, dtype=torch.float32)
+
+
+def plot_single_trials(targets, preds, k=10, n=5, split="train", start_gen=None):
+    v, neurons = torch.topk(targets.mean((0,1)), k=k)
+    kernel_size = 4
+    sigma = 1.5
+    kernel = gaussian_kernel(kernel_size, sigma).view(1, 1, -1)
+    for neuron in neurons:
+        fig, ax = plt.subplots(n, sharey=True)
+        for i in range(n):
+            for c, color in zip([-1,1],["blue","red"]):
+                p = preds[choice == c][i,kernel_size//2:-kernel_size//2,neuron]
+                t = targets[choice == c][i,:,neuron]
+                t_smooth = F.conv1d(t.unsqueeze(0).unsqueeze(0), kernel, padding=kernel_size//2).squeeze()[kernel_size//2:-kernel_size//2]
+                r2 = r2_score(t_smooth, p)
+                ax[i].plot(range(t_smooth.size(0)), t_smooth, color=color, linewidth=2, alpha=0.5, label=f"Targets choice {c}")
+                ax[i].plot(range(p.size(0)), p, color=color, linewidth=0.5,  label=f"Predictions choice {c}")
+                ax[i].text(0.57+ 0.1*c, 0.75, "R2={:.2f}".format(r2), color=color, transform=ax[i].transAxes)
+                if start_gen is not None:
+                    ax[i].axvline(start_gen, color="black", linewidth=0.5)
+        ax[0].legend(loc='upper right', bbox_to_anchor=(1.65, 0.5))
+        ax[-1].set_xlabel("Timesteps")
+        fig.suptitle(f"smoothed activity vs predicted rates. \nSession f312aaec-3b6f-44b3-86b4-3a0c119c0438   Neuron #{neuron}")
+        fig.subplots_adjust(right=0.65, hspace=0.5)
+        fig.savefig(f"{split}_single_trial_{neuron}{'_'+str(start_gen) if start_gen else ''}.png")
+
+
+plot_single_trials(targets, preds)
+
+
+
+def plot_condition_averaged(targets, preds, k=10, split="train", start_gen=None):
+    v, neurons = torch.topk(targets.mean((0,1)), k=k)
+    kernel_size = 4
+    sigma = 1.5
+    kernel = gaussian_kernel(kernel_size, sigma).view(1, 1, -1)
+    for neuron in neurons:
+        fig, ax = plt.subplots(2, sharey=True)
+        for c, color in zip([-1,1],["blue","red"]):
+            p = preds[choice == c][:,kernel_size//2:-kernel_size//2,neuron]
+            t = targets[choice == c][:,:,neuron]
+            t_smooth = F.conv1d(t.unsqueeze(1), kernel, padding=kernel_size//2).squeeze(1)[:,kernel_size//2:-kernel_size//2]
+            r2 = r2_score(t_smooth.mean(0), p.mean(0))
+            ax[0].fill_between(range(t_smooth.size(1)), t_smooth.mean(0) - 0.1*t_smooth.std(0), t_smooth.mean(0) + 0.1*t_smooth.std(0), alpha=0.7, color=color, label=f"Choice {c}")
+            ax[1].fill_between(range(p.size(1)), p.mean(0) - 0.1*p.std(0), p.mean(0) + 0.1*p.std(0), alpha=0.7, color=color)
+            ax[1].text(0.65+ 0.1*c, 0.75, "R2={:.2f}".format(r2), color=color, transform=ax[1].transAxes)
+        fig.suptitle(f"smoothed activity vs predicted rates. \nSession f312aaec-3b6f-44b3-86b4-3a0c119c0438   Neuron #{neuron}")
+        if start_gen is not None:
+            ax[1].axvline(start_gen, color="black", linewidth=0.5)
+            ax[0].axvline(start_gen, color="black", linewidth=0.5)
+        ax[0].set_xlabel("Timesteps")
+        ax[1].set_xlabel("Timesteps")
+        ax[0].set_ylabel("Smoothed targets")
+        ax[1].set_ylabel("NDT1-GPT")
+        ax[0].legend(loc='upper right', bbox_to_anchor=(1.45, 0.0))
+        fig.subplots_adjust(right=0.65, hspace=0.5)
+        fig.savefig(f"{split}_condition_averaged_{neuron}{'_'+str(start_gen) if start_gen else ''}.png")
+        plt.close()
+
+plot_condition_averaged(targets, preds)
+
+
+
+####
+
+
+
+
 
 
 preds_m = preds[:,:-1,:].detach().cpu()  # [mask[:,:-1].bool()]
@@ -208,15 +291,16 @@ def rate_vs_spikes(preds, targets, max_count=3, yaxis="rates"):
 
 
 
-di = iter(trainer.test_dataloader)
-ex = next(di)
+di = iter(trainer.train_dataloader)
+# ex = next(di)
 
 # for b in [1,5,20,40]:
-b = 5
+b = 60
 max_new_bins = b
 
 all_inputs = []
 all_targets = []
+all_choice = []
 for ex in di:
     inputs = {
         "spikes": ex[0]["spikes"][:,:-max_new_bins,:],
@@ -224,17 +308,23 @@ for ex in di:
         "spikes_timestamp": ex[0]["spikes_timestamp"][:,:-max_new_bins],
         "spikes_lengths": ex[0]["spikes_lengths"] - torch.maximum(torch.tensor(0),(max_new_bins + (ex[0]["spikes_mask"]-1).sum(1)))
     }
-    targets = ex[0]["spikes"][:,-max_new_bins:,:]
+    targets = ex[0]["spikes"]
+    choice = ex[1]["choice"]
     all_targets.append(targets)
     all_inputs.append(inputs)
+    all_choice.append(choice)
 
 
 inputs = {k: torch.cat([row[k] for row in all_inputs],0) for k in all_inputs[0]}
-targets = torch.cat(all_targets,0)
+targets = torch.cat(all_targets,0).detach().cpu()
+choice = torch.cat(all_choice,0).detach().cpu()
 
 with torch.no_grad():
-    preds = trainer.model.generate(**inputs, max_new_bins=max_new_bins)
+    preds, bins = trainer.model.generate(**inputs, max_new_bins=max_new_bins)
+    preds = preds.detach().cpu()
+    bins = bins.detach().cpu()
 
+preds = torch.cat((targets[:,:-max_new_bins,:], preds),1)
 
 nspikes = [0,1,2,3]
 mean_rates = [preds[targets == i].mean().item() for i in range(4)]
@@ -283,4 +373,8 @@ false_neg
 true_neg
 
 
+
+for i in range(len(d["train"])):
+    d["train"][i]["spikes"] = d["train"][i]["spikes"].astype(np.float32)
+    d["train"][i]["choice"] = np.asarray(d["train"][i]["choice"])
 

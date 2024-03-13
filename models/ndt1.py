@@ -724,9 +724,9 @@ class NDT1(nn.Module):
         max_new_bins:       Optional[int]               = 16,        
     ) -> NDT1Output:   
 
-        if self.method = "mlm":
+        if self.method == "mlm":
             return self.generate_mlm(spikes, spikes_mask, spikes_timestamp, spikes_lengths, block_idx, date_idx, max_new_bins)
-        elif self.method = "autoregressive":
+        elif self.method == "autoregressive":
             return self.generate_autoregressive(spikes, spikes_mask, spikes_timestamp, spikes_lengths, block_idx, date_idx, max_new_bins)
 
     def generate_autoregressive(
@@ -748,6 +748,7 @@ class NDT1(nn.Module):
         self.encoder.norm_and_noise.white_noise_sd = None
         self.encoder.norm_and_noise.constant_offset_sd = None
         
+        bins = []
         preds = []
 
         inputs = spikes if spikes is not None else torch.ones(1,1,self.config.encoder.embedder.n_channels)   # (bs, seq_len+i+1, n_channels)
@@ -755,9 +756,11 @@ class NDT1(nn.Module):
         inputs_timestamp = spikes_timestamp if spikes_timestamp is not None else torch.zeros(1,1)
         for i in range(max_new_bins):
             outputs = self(spikes=inputs, spikes_mask=inputs_mask, spikes_timestamp=inputs_timestamp, spikes_lengths=spikes_lengths)
+            new_preds = outputs.preds[:,-1:,:]
             new_bins = outputs.preds[:,-1:,:]    # (bs, 1, n_channels)
             if self.loss_name == "poisson_nll":
                 if self.log_input:
+                    new_preds = new_preds.exp()
                     new_bins = new_bins.exp()
                 # If we are predicting rates we have to sample from these rates
                 new_bins = torch.poisson(new_bins)
@@ -765,13 +768,14 @@ class NDT1(nn.Module):
             # Assumes left padding
             inputs_mask = torch.cat((inputs_mask,torch.ones_like(inputs_mask[:,-1:])),dim=1)  # (bs, seq_len+i+1)
             inputs_timestamp = torch.cat((inputs_timestamp,inputs_timestamp[:,-1:]+1),dim=1) # (bs, seq_len+i+1)
-            preds.append(new_bins[:,0,:])
+            bins.append(new_bins[:,0,:])
+            preds.append(new_preds[:,0,:])
 
         self.encoder.mask = prev_mask
         self.encoder.norm_and_noise.white_noise_sd = prev_white
         self.encoder.norm_and_noise.constant_offset_sd = prev_offset
 
-        return torch.stack(preds, 1)    # (bs, max_new_bins, n_channels)
+        return torch.stack(preds, 1), torch.stack(bins, 1)    # (bs, max_new_bins, n_channels)
 
 
 
@@ -794,6 +798,7 @@ class NDT1(nn.Module):
         self.encoder.norm_and_noise.white_noise_sd = None
         self.encoder.norm_and_noise.constant_offset_sd = None
         
+        bins = []
         preds = []
 
         inputs = spikes
@@ -805,23 +810,26 @@ class NDT1(nn.Module):
             inputs_timestamp = torch.cat((inputs_timestamp,inputs_timestamp[:,-1:]+1),dim=1) if inputs_timestamp is not None else torch.zeros(1,1) # (bs, seq_len+i+1)
 
             outputs = self(spikes=inputs, spikes_mask=inputs_mask, spikes_timestamp=inputs_timestamp, spikes_lengths=spikes_lengths)
+            new_preds = new_bins = outputs.preds[:,-1:,:]
             new_bins = outputs.preds[:,-1:,:]    # (bs, 1, n_channels)
             if self.loss_name == "poisson_nll":
                 if self.log_input:
+                    new_preds = new_preds.exp()
                     new_bins = new_bins.exp()
                 # If we are predicting rates we have to sample from these rates
                 new_bins = torch.poisson(new_bins)
 
             # Assumes left padding
             inputs[:,-1:,:] = new_bins
-            preds.append(new_bins)
+            bins.append(new_bins)
+            preds.append(new_preds)
 
 
         self.encoder.mask = prev_mask
         self.encoder.norm_and_noise.white_noise_sd = prev_white
         self.encoder.norm_and_noise.constant_offset_sd = prev_offset
 
-        return torch.cat(preds, dim=1)    # (bs, max_new_bins, n_channels)
+        return torch.cat(preds, dim=1), torch.cat(bins, dim=1)    # (bs, max_new_bins, n_channels)
 
 
     def save_checkpoint(self, save_dir):

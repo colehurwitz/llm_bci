@@ -37,10 +37,16 @@ def main(args):
             metric_fns = {"WER": wer}
 
     # Adjust models based on dataset
-    if config.model.model_class == "PatchTST":
-        # We need uniform lenght of the padded batches for PatchTST
-        p = config.model.encoder.patch_length
-        context = ((max(row["spikes"].shape[0] for split in dataset.values() for row in split) + p-1) // p) * p
+    if config.model.model_class in ["iTransformer","PatchTST"]:
+        config["model"]["encoder"]["num_input_channels"] = dataset["train"][0]["spikes"].shape[1]
+        # We need uniform lenght of the padded batches for PatchTST and iTransformer
+        if config.model.model_class == "PatchTST":
+            p = config.model.encoder.patch_length
+            context = ((max(row["spikes"].shape[0] for split in ["train","test"] for row in dataset[split]) + p-1) // p) * p
+            config["model"]["encoder"]["context_length"] = context
+        else:
+            context = max(row["spikes"].shape[0] for split in ["train","test"] for row in dataset[split])
+            config["model"]["encoder"]["max_n_bins"] = context
         pad_update = DictConfig( {"method": {"dataloader_kwargs": {"pad_dict":
             {
                 "spikes": 
@@ -68,15 +74,13 @@ def main(args):
             }
         }}})
         config = update_config(config, pad_update)
-        config["model"]["encoder"]["context_length"] = context
-        config["model"]["encoder"]["num_input_channels"] = dataset["train"][0]["spikes"].shape[1]
     elif config.model.model_class == "NDT1":
         config["model"]["encoder"]["embedder"]["n_channels"] = dataset["train"][0]["spikes"].shape[1]
-
 
     trainer = Trainer(config, dataset=dataset, metric_fns=metric_fns)
     trainer.train()
 
+    
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()

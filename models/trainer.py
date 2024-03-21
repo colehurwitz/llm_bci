@@ -23,6 +23,7 @@ from datasets import load_dataset
 from utils.config_utils import DictConfig, config_from_kwargs, update_config
 from data_utils.datasets import SpikingDataset, SpikingDatasetForCTC, pad_collate_fn
 from models.patchtst import PatchTSTForSpikingActivity
+from models.itransformer import iTransformer
 from models.ndt1 import NDT1
 
 """ Mapping from dataset class names to dataset class. New dataset classes should be registered here
@@ -31,7 +32,7 @@ NAME2DATASET = {"ssl": SpikingDataset, "ctc": SpikingDatasetForCTC}
 
 """ Mapping from model class names to model class. New model classes should be registered here
 """
-NAME2MODEL = {"PatchTST": PatchTSTForSpikingActivity, "NDT1": NDT1}
+NAME2MODEL = {"PatchTST": PatchTSTForSpikingActivity, "NDT1": NDT1, "iTransformer": iTransformer}
 
 """ Base configuration for the Trainer. 
 """
@@ -295,7 +296,7 @@ class Trainer():
                 test_metrics[name].append(self.accelerator.gather(fn(self.model, model_inputs, unused_inputs, outputs.to_dict(), **self.metric_kwargs)).sum().detach().item())
 
 
-        test_avg_loss = sum(test_loss) / sum(test_examples)
+        test_avg_loss = sum(test_loss) / sum(test_examples) if sum(test_examples) > 0 else 0
         test_avg_metrics = {k: sum(v)/len(v) for k, v in test_metrics.items()}
 
         return test_avg_loss, test_avg_metrics
@@ -359,7 +360,7 @@ class Trainer():
 
                     self.print_v(f"Evaluation at step {global_step}", verbosity=1)
                     test_avg_loss, test_avg_metrics = self.evaluate(self.eval_metric_fns)
-                    train_avg_loss = sum(train_loss) / sum(train_examples)
+                    train_avg_loss = sum(train_loss) / sum(train_examples) if sum(train_examples) > 0 else 0
                     train_avg_metrics = {k: sum(v)/len(v) for k, v in train_metrics.items()}
                 
                     self.print_v(f"{self.savestring=} {global_step=}:" + "\n" + \

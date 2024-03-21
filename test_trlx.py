@@ -13,6 +13,7 @@ from peft.utils.config import TaskType
 from transformers import AutoTokenizer, AutoModelForCausalLM
 
 import trlx
+import trlx.trainer
 import trlx.models
 import trlx.models.modeling_base
 from trlx.pipeline.offline_pipeline import PhonemePromptPipeline
@@ -41,7 +42,7 @@ config = TRLConfig(
         seq_length=1024,            # max seq len (for ILQL, not PPO)
         epochs=10000,   
         total_steps=10000,
-        batch_size=1,              
+        batch_size=2,              
         checkpoint_interval=10000,
         eval_interval=100,
         pipeline="PhonemePromptPipeline",
@@ -55,7 +56,7 @@ config = TRLConfig(
     method=PPOConfig(
         name="PPOConfig",
         num_rollouts=8,
-        chunk_size=1,
+        chunk_size=2,
         ppo_epochs=4,
         init_kl_coef=0.05,
         target=6,
@@ -64,11 +65,12 @@ config = TRLConfig(
         lam=0.95,
         cliprange=0.2,
         cliprange_value=0.2,
+        cliprange_reward=10.0,
         vf_coef=1,
         scale_reward="running",
         ref_mean=None,
         ref_std=None,
-        cliprange_reward=10,
+        # cliprange_reward=10,      # clips reward i make_experience
         gen_kwargs=dict(
             max_new_tokens=20,
             temperature=1.0,        # rpobably want to ramp up the temperature to produce diverse samples
@@ -89,10 +91,9 @@ config = TRLConfig(
 
 checkpoint_path = "/home/gridsan/dbeneto/TFG/BCI/checkpoints/old_ft/phonemes-rank_1-lr_1.e-4-gauss_0.0-spikes_0.7_2_0.9-norm_identity_1/EP12-STEP1849"
 config.model.model_path = checkpoint_path
-config.train.batch_size = 1
-config.train.seq_length = 512
+config.train.batch_size = 2
 config.train.total_steps = 6000
-config.method.chunk_size = 1
+config.method.chunk_size = 2
 
 hparams = {}    # Use this to update config for sweeping
 # Merge sweep config with default config if given
@@ -114,7 +115,7 @@ tokenizer = AutoTokenizer.from_pretrained(ft_config.dirs.tokenizer_dir, padding_
 pad_id = tokenizer.eos_token_id
 g2p = G2p()
 
-ft_config["trainer"]["test_len"] = 32
+ft_config["trainer"]["test_len"] = 64
 data = torch.load("/home/gridsan/dbeneto/MAML-Soljacic_shared/BCI/data/competitionData/phonemes_data.pth")
 train_data = {k: v[:ft_config.trainer.train_len] if ft_config.trainer.train_len != -1 else v for k,v in data["train"].items()}
 train_data = prepare_phonemes_data(train_data, tokenizer, g2p, "phonemes: %% sentence:")
@@ -142,24 +143,11 @@ config.model.model_path = model.llm
 
 
 
-train_dataloader = DataLoader(
-    train_dataset, shuffle=True, collate_fn=partial(ft_pad_collate_fn,ft_config.noise,ft_config.mask,pad_id,"test"), batch_size=1, pin_memory=True,
-)
-test_dataloader = DataLoader(
-    test_dataset, collate_fn=partial(ft_pad_collate_fn,ft_config.noise,ft_config.mask,pad_id,"test"), batch_size=1, pin_memory=True,
-)
 
-train_iter = iter(train_dataloader)
-test_iter = iter(test_dataloader)
-
-# rl(trlx)
-# rl(trlx.models)
-# rl(trlx.models.modeling_base)
-# import trlx
-# from trlx.models import *
-# from trlx.models.modeling_base import *
-
-
+rl(trlx)
+rl(trlx.trainer)
+rl(trlx.trainer.accelerate_ppo_trainer_embed)
+from trlx.trainer.accelerate_ppo_trainer_embed import *
 
 set_seed(config.train.seed)
 _trainer = AcceleratePPOTrainerEmbed(
@@ -203,3 +191,23 @@ for ((pn, p), (bn, b)) in zip(prev_model.named_parameters(), _trainer.model.name
 for pn, p in _trainer.model.named_parameters():
     if p.requires_grad:
         print(pn)
+
+
+
+# from torch.utils.data import DataLoader
+# train_dataloader = DataLoader(
+#     train_dataset, shuffle=True, collate_fn=partial(ft_pad_collate_fn,ft_config.noise,ft_config.mask,pad_id,"test"), batch_size=1, pin_memory=True,
+# )
+# test_dataloader = DataLoader(
+#     test_dataset, collate_fn=partial(ft_pad_collate_fn,ft_config.noise,ft_config.mask,pad_id,"test"), batch_size=1, pin_memory=True,
+# )
+
+# train_iter = iter(train_dataloader)
+# test_iter = iter(test_dataloader)
+
+# rl(trlx)
+# rl(trlx.models)
+# rl(trlx.models.modeling_base)
+# import trlx
+# from trlx.models import *
+# from trlx.models.modeling_base import *

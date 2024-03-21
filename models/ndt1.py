@@ -1,6 +1,5 @@
 import os
 from dataclasses import dataclass
-from copy import deepcopy
 from typing import List, Optional, Tuple, Dict
 from functools import partial
 
@@ -14,7 +13,7 @@ ACT2FN["softsign"] = nn.Softsign
 
 from utils.config_utils import DictConfig, update_config
 from models.model_output import ModelOutput
-
+from models.masker import Masker
 DEFAULT_CONFIG = "configs/ndt1.yaml"
 
 
@@ -73,77 +72,6 @@ def apply_rotary_pos_emb(q, k, pos_ids, cos, sin, unsqueeze_dim=1):
 
 
 
-# Mask spikes
-class Masker(nn.Module):
-
-    def __init__(self, embed_mode, config: DictConfig):
-        super().__init__()
-
-        self.mode = config.mode
-        self.ratio = config.ratio
-        self.zero_ratio = config.zero_ratio
-        self.random_ratio = config.random_ratio
-        self.expand_prob = config.expand_prob
-        self.max_timespan = config.max_timespan
-        self.embed_mode = embed_mode
-
-    def forward(
-        self, 
-        spikes: torch.FloatTensor,                      # (bs, seq_len, n_channels)
-    ) -> Tuple[torch.FloatTensor,torch.LongTensor]:     # (bs, seq_len, n_channels), (bs, seq_len, n_channels)
-
-        mask_ratio = deepcopy(self.ratio)
-
-        # Expand mask
-        if self.mode == "timestep":
-            if torch.bernoulli(torch.tensor(self.expand_prob).float()):
-                timespan = torch.randint(1, self.max_timespan+1, (1, )).item() 
-            else:
-                timespan = 1
-            mask_ratio = mask_ratio/timespan
-
-        # Get masking probabilities
-        if self.mode == "full":
-            mask_probs = torch.full(spikes.shape, mask_ratio)     # (bs, seq_len, n_channels)
-        elif self.mode == "timestep":
-            mask_probs = torch.full(spikes[:, :, 0].shape, mask_ratio) # (bs, seq_len)
-        elif self.mode == "neuron":
-            mask_probs = torch.full(spikes[:, 0].shape, mask_ratio)    # (bs, n_channels)
-        else:
-            raise Exception(f"Masking mode {self.mode} not implemented")
-        
-        # Create mask
-        mask = torch.bernoulli(mask_probs).to(spikes.device)
-
-        # Expand mask
-        if self.mode == "timestep":
-            mask = self.expand_timesteps(mask, timespan)
-            mask = mask.unsqueeze(2).expand_as(spikes).bool()    # (bs, seq_len, n_channels)
-        elif self.mode == "neuron":
-            mask = mask.unsqueeze(1).expand_as(spikes).bool()    # (bs, seq_len, n_channels)
-        else: # full
-            mask = mask.bool()
-        # Mask data
-        zero_idx = torch.bernoulli(torch.full(spikes.shape, self.zero_ratio)).to(spikes.device).bool() & mask
-        spikes[zero_idx] = 0
-        random_idx = torch.bernoulli(torch.full(spikes.shape, self.random_ratio)).to(spikes.device).bool() & mask & ~zero_idx
-        random_spikes = (spikes.max() * torch.rand(spikes.shape, device=spikes.device) )
-        if self.embed_mode == "embed":
-            random_spikes = random_spikes.to(torch.int64)
-        elif self.embed_mode == "identity":
-            random_spikes = random_spikes.round()
-        else:
-            random_spikes = random_spikes.float()
-
-        spikes[random_idx] = random_spikes[random_idx]
-
-        return spikes, mask.to(torch.int64)
-
-    @staticmethod
-    def expand_timesteps(mask, width=1):
-        kernel = torch.ones(width, device=mask.device).view(1, 1, -1)
-        expanded_mask = F.conv1d(mask.unsqueeze(1), kernel, padding="same")
-        return (expanded_mask.squeeze(1) >= 1)
         
 
 # Normalize and add noise
@@ -418,7 +346,7 @@ class NeuralAttention(nn.Module):
 # Encoder layer: bidirectional self-attention + mlp
 class NeuralEncoderLayer(nn.Module):
     
-    def __init__(self, idx, max_F, config: DictConfig, **kwargs):
+    def __init__(self, idx, max_F, config: DictConfig):
         super().__init__()
 
         self.idx = idx
@@ -499,19 +427,17 @@ class NeuralEncoder(nn.Module):
     def __init__(
         self, 
         config: DictConfig,
-        **kwargs
     ):
         super().__init__() 
 
         self.int_spikes = config.embedder.mode == "embed"
         self.hidden_size = config.transformer.hidden_size
         self.n_layers = config.transformer.n_layers
-        self.method = kwargs["method"]
 
         # Masker
         self.mask = config.masker.active
         if self.mask:
-            self.masker = Masker(config.embedder.mode, config.masker)
+            self.masker = Masker(config.masker)
 
         # Context span mask
         context_mask = create_context_mask(config.context.forward, config.context.backward, config.embedder.max_F)
@@ -524,7 +450,7 @@ class NeuralEncoder(nn.Module):
         self.embedder = NeuralEmbeddingLayer(self.hidden_size, config.embedder)
 
         # Transformer
-        self.layers = nn.ModuleList([NeuralEncoderLayer(idx, config.embedder.max_F, config.transformer, **kwargs) for idx in range(self.n_layers)])
+        self.layers = nn.ModuleList([NeuralEncoderLayer(idx, config.embedder.max_F, config.transformer) for idx in range(self.n_layers)])
         self.out_norm = ScaleNorm(self.hidden_size ** 0.5) if config.transformer.use_scalenorm else nn.LayerNorm(self.hidden_size) 
        
         # Out projection
@@ -594,7 +520,7 @@ class NDT1(nn.Module):
         if encoder_pt_path is not None:
             encoder_config = os.path.join(encoder_pt_path, "encoder_config.yaml")
             config["encoder"] = update_config(config.encoder, encoder_config)
-        self.encoder = NeuralEncoder(config.encoder, method=self.method)
+        self.encoder = NeuralEncoder(config.encoder)
 
         # Load encoder weights
         if encoder_pt_path is not None:
@@ -618,7 +544,7 @@ class NDT1(nn.Module):
         decoder_layers = []
         decoder_layers.append(nn.Linear(self.encoder.out_proj.out_size, n_outputs))
 
-        if self.method in ["sft","autoregressive"] and (kwargs["loss"] == "mse" or not kwargs["log_input"]):
+        if self.method in ["ctc","autoregressive"] and (kwargs["loss"] == "mse" or not kwargs["log_input"]):
             decoder_layers.append(nn.ReLU()) # If we're not using loginput, we need to feed positive rates. If we are using MSE we need to feed positive spikes
         elif self.method == "ctc":
             decoder_layers.append(nn.LogSoftmax(dim=-1))  # CTC loss asks for log-softmax-normalized logits
@@ -776,8 +702,6 @@ class NDT1(nn.Module):
         self.encoder.norm_and_noise.constant_offset_sd = prev_offset
 
         return torch.stack(preds, 1), torch.stack(bins, 1)    # (bs, max_new_bins, n_channels)
-
-
 
     def generate_mlm(
         self, 

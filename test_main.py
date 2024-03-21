@@ -26,6 +26,7 @@ import models
 import models.trainer
 import models.patchtst
 import models.ndt1
+import models.itransformer
 from models.trainer import Trainer, default_trainer_config
 
 all = []
@@ -38,15 +39,15 @@ def probe(model, model_inputs, unused_inputs, outputs, **kwargs):
 
 
 kwargs = {
-    "savestring": "ibl_choice_0_autor_small",
+    "savestring": "ibl_choice_0_itransformer",
     "training.num_epochs": "1000", "training.train_batch_size": "16", "training.test_batch_size": "16",
     "optimizer.gradient_accumulation_steps": "1",
     "training.eval_every": "500", "training.save_every": "500", 
     "data.train_len": "null", "data.test_len": "null",
-    "model": "include:configs/ndt1s.yaml",
+    "model": "include:configs/itransformer.yaml",
     "data.data_load": "file",
 }
-config_file = "configs/trainer_ssl.yaml"
+config_file = "configs/trainer_ssl_itransformer.yaml"
 config = update_config(default_trainer_config(), config_file)
 config = update_config(config, config_from_kwargs(kwargs))
 
@@ -61,10 +62,16 @@ config = update_config(config, config_from_kwargs(kwargs))
 #         dataset = create_phonemes_ctc_labels(dataset, config.data.vocab_file)
 
 # Adjust models based on dataset
-if config.model.model_class == "PatchTST":
-    # We need uniform lenght of the padded batches for PatchTST
-    p = config.model.encoder.patch_length
-    context = ((max(row["spikes"].shape[0] for split in dataset.values() for row in split) + p-1) // p) * p
+if config.model.model_class in ["iTransformer","PatchTST"]:
+    config["model"]["encoder"]["num_input_channels"] = dataset["train"][0]["spikes"].shape[1]
+    # We need uniform lenght of the padded batches for PatchTST and iTransformer
+    if config.model.model_class == "PatchTST":
+        p = config.model.encoder.patch_length
+        context = ((max(row["spikes"].shape[0] for split in ["train","test"] for row in dataset[split]) + p-1) // p) * p
+        config["model"]["encoder"]["context_length"] = context
+    else:
+        context = max(row["spikes"].shape[0] for split in ["train","test"] for row in dataset[split])
+        config["model"]["encoder"]["max_n_bins"] = context
     pad_update = DictConfig( {"method": {"dataloader_kwargs": {"pad_dict":
         {
             "spikes": 
@@ -92,8 +99,6 @@ if config.model.model_class == "PatchTST":
         }
     }}})
     config = update_config(config, pad_update)
-    config["model"]["encoder"]["context_length"] = context
-    config["model"]["encoder"]["num_input_channels"] = dataset["train"][0]["spikes"].shape[1]
 elif config.model.model_class == "NDT1":
     config["model"]["encoder"]["embedder"]["n_channels"] = dataset["train"][0]["spikes"].shape[1]
 
@@ -109,18 +114,23 @@ rl(data_utils.datasets)
 rl(data_utils.speechbci_dataset)
 from data_utils.speechbci_dataset import *
 from data_utils.datasets import *
+rl(torch)
+rl(torch.storage)
+from torch.storage import *
 rl(models)
 rl(models.trainer)
 rl(models.patchtst)
+rl(models.itransformer)
 rl(models.ndt1)
 from models.patchtst import *
 from models.ndt1 import *
+from models.itransformer import *
 from models.trainer import Trainer
 
 
-
-# config["model"]["encoder"]["from_pt"] = from_pt
-# config["model"]["decoder"]["from_pt"] = from_pt
+from_pt = "pt_checkpoints/itransformer-choice_0-mlm-bs-8-nl_4-hs_128-d_0.5-mask_full/STEP64500"
+config["model"]["encoder"]["from_pt"] = from_pt
+config["model"]["decoder"]["from_pt"] = from_pt
 # config["savestring"] = "mlm_ndt_poisson"
 # config["model"]["encoder"]["masker"]["active"] = True
 # config["model"]["encoder"]["context"]["forward"] = -2
@@ -129,14 +139,14 @@ from models.trainer import Trainer
 # config["method"]["model_kwargs"]["method_name"] = "mlm"
 # config["training"]["eval_every"] = 100
 # config["verbosity"] = 0
-
-from_pt = "pt_checkpoints/choice_0-bs-8-nl_3-hs_128-is_256-fa_false-d_0.4/STEP31500"
-config = DictConfig(torch.load(os.path.join(from_pt, "trainer_config.pth")))
+# config["model"]["masker"]["mode"] = "full"
 
 all = []
 trainer = Trainer(config, dataset=dataset, metric_fns={"A": probe})#, "WER": wer})
-trainer.model.load_checkpoint(from_pt)
-trainer.train()
+trainer.model.mask = False
+# trainer.train()
+# config = DictConfig(torch.load(os.path.join(from_pt, "trainer_config.pth")))
+# trainer.model.load_checkpoint(from_pt)
 trainer.evaluate(eval_train_set=True)
 
 
@@ -181,6 +191,26 @@ choice = torch.cat(all_choice,0).detach().cpu()
 preds = preds[:,:-1,:]
 targets = targets[:,1:,:]
 
+### SUHQI PLOTS ### 
+import viz_neuron_fit
+from viz_neuron_fit import viz_single_cell
+
+X = choice.unsqueeze(1).expand(preds.shape[:2]).unsqueeze(2).numpy() # [#trials, #timesteps, #variables]
+ys = targets # [#trials, #timesteps, #neurons]
+y_preds = preds # [#trials, #timesteps, #neurons]
+
+
+var_name2idx = {'choice': [0]}
+var_value2label = {'choice': {(-1.0,): "right", (1.0,): "left"}}
+var_tasklist = ['choice']
+
+rl(viz_neuron_fit)
+from viz_neuron_fit import viz_single_cell
+for ni in neurons:
+    viz_single_cell(X,ys[:,:,ni],y_preds[:,:,ni], 
+                    var_name2idx, var_tasklist, var_value2label,
+                    subtract_psth="task", aligned_tbins=[40], save_name=f"neuron_{ni}.png")
+
 ### PLOTTING CONDITION-AVERAGED AND SINGLE-TRIAL ###
 
 def gaussian_kernel(kernel_size, sigma):
@@ -191,6 +221,8 @@ def gaussian_kernel(kernel_size, sigma):
 
 def plot_single_trials(targets, preds, k=10, n=5, split="train", start_gen=None):
     v, neurons = torch.topk(targets.mean((0,1)), k=k)
+    neurons = [neuron.item() for neuron in neurons]
+    neurons.append(75)
     kernel_size = 4
     sigma = 1.5
     kernel = gaussian_kernel(kernel_size, sigma).view(1, 1, -1)
@@ -218,8 +250,10 @@ plot_single_trials(targets, preds)
 
 
 
-def plot_condition_averaged(targets, preds, k=10, split="train", start_gen=None):
+def plot_condition_averaged(targets, preds, k=10, split="test", start_gen=None):
     v, neurons = torch.topk(targets.mean((0,1)), k=k)
+    neurons = [neuron.item() for neuron in neurons]
+    neurons.append(75)
     kernel_size = 4
     sigma = 1.5
     kernel = gaussian_kernel(kernel_size, sigma).view(1, 1, -1)
@@ -239,8 +273,8 @@ def plot_condition_averaged(targets, preds, k=10, split="train", start_gen=None)
             ax[0].axvline(start_gen, color="black", linewidth=0.5)
         ax[0].set_xlabel("Timesteps")
         ax[1].set_xlabel("Timesteps")
-        ax[0].set_ylabel("Smoothed targets")
-        ax[1].set_ylabel("NDT1-GPT")
+        ax[0].set_ylabel("Smoothed activity")
+        ax[1].set_ylabel("NDT1")
         ax[0].legend(loc='upper right', bbox_to_anchor=(1.45, 0.0))
         fig.subplots_adjust(right=0.65, hspace=0.5)
         fig.savefig(f"{split}_condition_averaged_{neuron}{'_'+str(start_gen) if start_gen else ''}.png")

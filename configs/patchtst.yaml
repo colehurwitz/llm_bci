@@ -4,14 +4,14 @@ encoder:
   from_pt: null
   num_input_channels: 128
   context_length: 45
-  patch_length: 16
-  patch_stride: 16
-  num_hidden_layers: 3
-  d_model: 128
+  patch_length: 10
+  patch_stride: 10
+  num_hidden_layers: 4
+  d_model: 256
   num_attention_heads: 8
   share_embedding: True
   channel_attention: False
-  ffn_dim: 256
+  ffn_dim: 1024
   norm_type: "batchnorm" 
   norm_eps: 1.e-5
   attention_dropout: 0.4
@@ -28,7 +28,7 @@ encoder:
   scaling: null # std/mean/null
   do_mask_input: True
   mask_type: random
-  random_mask_ratio: 0.5
+  random_mask_ratio: 0.1
   channel_consistent_masking: false
   # unmasked_channel_indices
   mask_value: 0

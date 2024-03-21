@@ -12,7 +12,7 @@ from utils.config_utils import DictConfig, update_config
 from utils.data_utils import PhonemesFinetuneDataset, ft_pad_collate_fn, prepare_phonemes_data
 from utils.eval_utils import word_error_count
 
-torch.backends.cudnn.benchmark = True
+# torch.backends.cudnn.benchmark = True
 
 prompt = "phonemes: %% sentence:"
 checkpoint_dir = "/n/home07/djimenezbeneto/lab/BCI/checkpoints"
@@ -30,7 +30,7 @@ config = DictConfig(torch.load(os.path.join(load_dir, "config.pth")))
 llama_dir = config.dirs.llm_dir
 tokenizer_dir = config.dirs.tokenizer_dir
 
-
+config["dirs"]["llm_dir"] = "/home/gridsan/dbeneto/MAML-Soljacic_shared/llama2/7b"
 llm = AutoModelForCausalLM.from_pretrained(config.dirs.llm_dir)
 model = PhonemeLLM(llm, load_dir)
 adapter_file = os.path.join(load_dir, "adapter_config.json")
@@ -66,18 +66,24 @@ train_iter = iter(train_dataloader)
 test_iter = iter(test_dataloader)
 
 
-beams = 10
+beams = 2
 gen_config = {
     "max_new_tokens": 20, 
-    "do_sample": False, "temperature": 1.0,  "top_p": 0.6, "top_k": 40, 
+    "do_sample": True, "temperature": 1.0,  "top_p": 0.6, "top_k": 40, 
     "num_beams": beams, 
-    "num_beam_groups": beams, "diversity_penalty": 1.2,
-    "repetition_penalty": 1.0, "length_penalty": 1.0, "no_repeat_ngram_size": 2, 
+    # "num_beam_groups": beams, "diversity_penalty": 1.2,
+    # "repetition_penalty": 1.0, "length_penalty": 1.0, "no_repeat_ngram_size": 2, 
     # "renormalize_logits": True, 
     "low_memory": True,
-    "num_return_sequences": beams, "output_scores": True, "return_dict_in_generate": True,
+    "num_return_sequences": beams, #"output_scores": True, "return_dict_in_generate": True,
     "pad_token_id": pad_id
 }
+# model.llm.generate(inputs_embeds=inputs_embeds, attention_mask=attention_mask, **gen_config, synced_gpus=synced_gpus)
+
+llm.to("cuda")
+inputs = tokenizer(tokenizer.bos_token + "Hello my name is ", return_tensors="pt")
+inputs = {k: v.to("cuda") for k,v in inputs.items()}
+tokenizer.batch_decode(llm.generate(**inputs, max_new_tokens=10))
 
 from time import perf_counter
 
@@ -89,9 +95,11 @@ all_scores = []
 time_b = 0.
 time_c = 0.
 for i, (model_inputs, prompt_inputs, sentence, true_ph, pred_ph) in tqdm(enumerate(test_dataloader)):
+    if i > 1:
+        pass
     a = perf_counter()
     prompt_inputs = {k: v.to("cuda") if isinstance(v, torch.Tensor) else [sub_v.to("cuda") for sub_v in v] for k,v in prompt_inputs.items()}
-    preds = model.predict(**prompt_inputs, **gen_config, synced_gpus=None)
+    preds = model.generate(**prompt_inputs, **gen_config, synced_gpus=None)
     b = perf_counter()
     time_b += b-a 
     dec_preds = [tokenizer.decode(p.detach().cpu().squeeze(), skip_special_tokens=True) for i, p in enumerate(preds.sequences)]

@@ -20,8 +20,9 @@ DEFAULT_CONFIG = "configs/patchtst.yaml"
 class PatchTSTOutput(ModelOutput):
     loss: Optional[torch.FloatTensor] = None
     n_examples: Optional[torch.LongTensor] = None
-    preds: Optional[torch.FloatTensor] = None
     mask: Optional[torch.LongTensor] = None
+    preds: Optional[torch.FloatTensor] = None
+    targets: Optional[torch.FloatTensor] = None
     patch_input: Optional[torch.FloatTensor] = None
 
 
@@ -110,7 +111,7 @@ class PretrainHead(nn.Module):
         self.num_input_channels = num_input_channels
         self.share_projection = config.share_projection
         self.mlp_decoder = config.mlp_decoder
-        self.use_lograte = kwargs["use_lograte"]
+        self.log_input = kwargs["log_input"]
 
         self.dropout = nn.Dropout(config.head_dropout) if config.head_dropout > 0 else nn.Identity()
         if not self.share_projection:
@@ -132,7 +133,7 @@ class PretrainHead(nn.Module):
                         ACT2FN[config.mlp_activation],
                         nn.Linear(d_model, patch_length),
                     )
-        self.post_proj = nn.ReLU() if not self.use_lograte else nn.Identity()
+        self.post_proj = nn.ReLU() if not self.log_input else nn.Identity()
 
 
     def forward(
@@ -193,15 +194,22 @@ class PatchTSTForSpikingActivity(nn.Module):
 
         # Build loss function
         if self.method == "mlm":
-            if kwargs["loss"] == "poisson_nll":
-                self.loss_fn = nn.PoissonNLLLoss(reduction="none", log_input=kwargs["use_lograte"])
+            assert config.encoder.do_mask_input, "Can't pretrain with inactive masking"
+            self.loss_name = kwargs["loss"]
+            self.log_input = kwargs["log_input"]
+            if self.loss_name == "poisson_nll":
+                self.loss_fn = nn.PoissonNLLLoss(reduction="none", log_input=self.log_input)
+            elif self.loss_name == "mse":
+                self.loss_fn = nn.MSELoss(reduction="none")
             else:   
                 raise Exception(f"Loss {kwargs['loss']} not implemented yet for mlm")
         elif self.method == "ctc":
             self.loss_fn = nn.CTCLoss(reduction="none", blank=kwargs["blank_id"], zero_infinity=kwargs["zero_infinity"])
         else:   
             raise Exception(f"Method {self.method} not implemented yet for PatchTST")
-
+        
+        # Save config
+        self.config = config
 
     def forward(
         self,
@@ -228,28 +236,31 @@ class PatchTSTForSpikingActivity(nn.Module):
             return PatchTSTOutput(
                 loss=loss,
                 n_examples=n_examples,
-                preds=preds,
-                patch_input=outputs.patch_input,
                 mask=mask,
+                preds=preds,
+                targets=outputs.patch_input,
+                patch_input=outputs.patch_input,
             )
 
         elif self.method == "ctc":
             # Adjust lenghts after patching
             spikes_lengths = (1 + (spikes_lengths - self.encoder.patchifier.patch_length) / self.encoder.patchifier.patch_stride).trunc().to(spikes_lengths.dtype)
             loss = self.loss_fn(log_probs=preds.transpose(0,1), targets=targets, input_lengths=spikes_lengths, target_lengths=targets_lengths).sum()
-            torch.save({"p": preds, "t": targets, "il": spikes_lengths, "tl": targets_lengths},"b.pth")
             n_examples = torch.tensor(len(targets), device=loss.device, dtype=torch.long)
             return PatchTSTOutput(
                 loss=loss,
                 n_examples=n_examples,
                 preds=preds,
+                targets=targets,
             )
         
 
     def save_checkpoint(self, save_dir):
         torch.save(self.encoder.state_dict(), os.path.join(save_dir,"encoder.bin"))
+        torch.save(dict(self.config.encoder), os.path.join(save_dir,"encoder_config.yaml"))
         torch.save(self.decoder.state_dict(), os.path.join(save_dir,"decoder.bin"))
+        torch.save(dict(self.config.decoder), os.path.join(save_dir,"decoder_config.yaml"))
 
     def load_checkpoint(self, load_dir):
-        self.encoder.load_state_dict(torch.load(os.path.join(save_dir,"encoder.bin")))
-        self.decoder.load_state_dict(torch.load(os.path.join(save_dir,"decoder.bin")))
+        self.encoder.load_state_dict(torch.load(os.path.join(load_dir,"encoder.bin")))
+        self.decoder.load_state_dict(torch.load(os.path.join(load_dir,"decoder.bin")))

@@ -14,7 +14,7 @@ dirs:
 
 # Training configuration
 training:
-  num_epochs: 500
+  num_epochs: 1000
   train_batch_size: 16
   test_batch_size: 16   
   shuffle_test_dataloader: true    # Shuffle test dataloader between epochs
@@ -24,7 +24,7 @@ training:
 
 
 
-model: include:configs/ndt1s.yaml
+model: include:configs/patchtst.yaml
 
 data:
   dataset_class: ssl
@@ -48,7 +48,7 @@ data:
 method:
 
   model_kwargs:
-    method_name: autoregressive
+    method_name: mlm
 
     log_input: true
     loss: poisson_nll # poisson_nll/mse(todo)

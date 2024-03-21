@@ -1,8 +1,19 @@
-name: iTransformer
+model_class: iTransformer
+
+# Mask spikes
+masker:
+  active: true         
+  mode: neuron        # full to zero out randomly in the spikes matrix. timestep to zero out randomly full timesteps. neuron to zero out full neurons
+  ratio: 0.1          # ratio of data to predict
+  zero_ratio: 1.0     # of the data to predict, ratio of zeroed out
+  random_ratio: 1.0   # of the not zeroed, ratio of randomly replaced
+  expand_prob: 0.0    # probability of expanding the mask 
+  max_timespan: 1     # max span of mask if expanded
+
 
 encoder:
   from_pt: null
-  max_n_bins: 200
+  max_n_bins: 100
   hidden_size: 256
   activation: relu
   bias: true
@@ -12,13 +23,9 @@ encoder:
 
 decoder:
   from_pt: null
-  method: sft
+  mlp_decoder: False
   activation: relu
-  use_lograte: true
-  activation: relu
-  vocab_size: 41
-  zero_infinity: false
-  
+
 
 
   

@@ -19,6 +19,7 @@ trainer.accelerate_base_trainer:
 -> line383: generate with "input_embeds"
 -> in the follwing lines, prompt.input_ids is used, we could keep that
 
+ppoembedrolloutstorage, query tensors are now inputs_embeds. Continue with loss. Then go to base_trainer learn(). Almost DONE!
 
 
 

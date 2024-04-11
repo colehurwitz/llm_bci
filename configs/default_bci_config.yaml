@@ -1,7 +1,0 @@
-# Project to llama hidden space
-stacking: 32
-projector_bias: false
-loss_reduction: "sum"
-
-neural_config:  include:configs/default_neural_config.yaml
-

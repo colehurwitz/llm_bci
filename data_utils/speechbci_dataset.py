@@ -14,7 +14,7 @@ from g2p_en import G2p
 """ Load competition data from ".mat" format.
 INPUTS
     data_dir: directory to load the data from
-    date_idxs: list of date indexes to keep
+    day_idxs: list of day indexes to keep
     zscore: wether to zscore the data by blocks
     splits: name of the split subfolders
     features: name of the features to extract
@@ -27,14 +27,14 @@ OUTPUTS
         spikes: np.ndarray of shape (seq_len, num_channels) containing neural data
         sentence: str with the corresponding sentence
         block: number of the block of experiment that corresponds to the example
-        date: date in which the data from the example was taken
+        day: day in which the data from the example was taken
         block_idx: normalized index for block
-        date_idx: normalized index for date
+        day_idx: normalized index for day
     }
 """
 def load_competition_data(
     data_dir:   str, 
-    date_idxs:  Optional[List[int]] = None,
+    day_idxs:  Optional[List[int]] = None,
     zscore:     Optional[bool]      = False, 
     splits:     Optional[List[str]] = ["train","test","competitionHoldOut"], 
     features:   Optional[List[str]] = ["tx1","spikePow"], 
@@ -43,7 +43,7 @@ def load_competition_data(
     **kwargs,
 ) -> Dict[str,List[Dict[str,Any]]]:
 
-    """ Extract neural data from files into dict. Returns the spikes data, the date and the
+    """ Extract neural data from files into dict. Returns the spikes data, the day and the
     block of the experiment, and the target sentence.
     """
     def get_split_dict(split_dir, zscore, features, area_start, area_end):
@@ -78,7 +78,7 @@ def load_competition_data(
             "spikes":  x_i.astype(np.float32),   
             "sentence": y_i,
             "block": b_i,
-            "date": d_i,
+            "day": d_i,
         }  for x_i, y_i, b_i, d_i in zip(x,y,b,d)]
     
     # Get dict for each split
@@ -89,23 +89,23 @@ def load_competition_data(
         dict = get_split_dict(dir, zscore, features, area_start, area_end)
         dataset_dict[split] = dict
 
-    # Index the dates and the blocks
+    # Index the days and the blocks
     all_blocks = set([row["block"]  for split in splits for row in dataset_dict[split]])
-    all_dates = sorted(set([row["date"]  for split in splits for row in dataset_dict[split]]))
+    all_days = sorted(set([row["day"]  for split in splits for row in dataset_dict[split]]))
 
-    if date_idxs is None:
-        date_idxs = list(range(len(all_dates)))
+    if day_idxs is None:
+        day_idxs = list(range(len(all_days)))
 
-    d_to_i = {d: i for i, d in enumerate(all_dates)} # date (tuple) to index (int)
+    d_to_i = {d: i for i, d in enumerate(all_days)} # day (tuple) to index (int)
     b_to_i = {b: i for i, b in enumerate(all_blocks)} # block (int) to index (int)
     for split in splits:
         keep_idx = []
         for i, row in enumerate(dataset_dict[split]):
-            if d_to_i[row["date"]] in date_idxs:
+            if d_to_i[row["day"]] in day_idxs:
                 dataset_dict[split][i]["block_idx"] = np.asarray(b_to_i[row["block"]])
-                dataset_dict[split][i]["date_idx"]  = np.asarray(d_to_i[row["date"]])
+                dataset_dict[split][i]["day_idx"]  = np.asarray(d_to_i[row["day"]])
                 keep_idx.append(i)
-        # keep only the selected sessions by date_idx
+        # keep only the selected sessions by day_idx
         dataset_dict[split] = [dataset_dict[split][i] for i in keep_idx]
     return dataset_dict
 

@@ -23,69 +23,74 @@ class SpikingDataset(Dataset):
     def __init__(
         self, 
         dataset: Dict[str,List[Any]], 
-        length: Optional[int] = None
+        length: Optional[int] = None,
+        spikes_name: Optional[str] = "spikes",
     ):  
         self.dataset = dataset[:length] if length is not None else dataset
-
+        self.spikes_name = spikes_name
+        
     def __len__(self):
         return len(self.dataset)
 
     def __getitem__(self, idx):
         # Gather all columns and remove special columns
         inputs = deepcopy(self.dataset[idx])
-        _ = [inputs.pop(k) for k in ["spikes"]]
+        _ = [inputs.pop(k) for k in [f"{self.spikes_name}"]]
 
-        spikes = self.dataset[idx]["spikes"].astype(np.float32)
+        spikes = self.dataset[idx][f"{self.spikes_name}"].astype(np.float32)
         inputs.update({
             "spikes": spikes,                                           # (seq_len, num_channels)
             "spikes_mask": np.ones(spikes.shape[0], dtype=np.int64),    # (seq_len)
             "spikes_timestamp": np.arange(0,spikes.shape[0]),           # (seq_len)
+            "spikes_spacestamp": np.arange(0,spikes.shape[1]),          # (num_channels)
             "spikes_lengths": np.asarray(spikes.shape[0]),              # (1)
         })
         return inputs
 
 
 
-""" Dataset to use for CTC training. 
+""" Dataset to use for supervised training. 
 INPUTS
     dataset: list of examples. Each example is a dict.
-    targets_name: name of the CTC labels in the dataset
+    targets_name: name of the labels in the dataset
     length: the list is trimmed up to this value
 OUTPUTS
     Dict{
         spikes: neural data of size (seq_len, num_channels)
-        targets: ctc labels of size (seq_len, vocab_size)
-        targets_lengths: length of each sequence of ctc labels 
+        targets: target labels
+        targets_lengths: length of each sequence of labels (can be 1 for trial-wise magnitudes)
     }
 """
-class SpikingDatasetForCTC(SpikingDataset):
+class SpikingDatasetForDecoding(SpikingDataset):
 
     def __init__(
         self, 
         dataset: List[Dict[str,Union[np.ndarray,Any]]], 
         length: Optional[int] = None,
+        spikes_name: Optional[str] = "spikes",
         targets_name: Optional[str] = "targets",
     ):  
         super().__init__(dataset, length)
-
+        
         self.targets_name = targets_name
 
     def __getitem__(self, idx):
         # Gather all columns and remove special columns
         inputs = deepcopy(self.dataset[idx])
-        _ = [inputs.pop(k) for k in ["spikes", f"{self.targets_name}"]]
+        _ = [inputs.pop(k) for k in [f"{self.spikes_name}", f"{self.targets_name}"]]
         
         # Add new columns
-        targets = self.dataset[idx][f"{self.targets_name}"].astype(np.int64)
-        spikes = self.dataset[idx]["spikes"].astype(np.float32)
+        targets = self.dataset[idx][f"{self.targets_name}"].astype(np.float32)
+        spikes = self.dataset[idx][f"{self.spikes_name}"].astype(np.float32)
         inputs.update({
             "spikes": spikes,                                           # (seq_len, num_channels)
             "spikes_mask": np.ones(spikes.shape[0], dtype=np.int64),    # (seq_len)
             "spikes_timestamp": np.arange(0,spikes.shape[0]),           # (seq_len)
+            "spikes_spacestamp": np.arange(0,spikes.shape[1]),          # (num_channels)
             "spikes_lengths": np.asarray(spikes.shape[0]),              # (1)
-            "targets":  targets,                                        # (seq_len)
-            "targets_mask": np.ones_like(targets),                      # (seq_len)
-            "targets_lengths": np.asarray(len(targets)),                # (1)
+            "targets":  targets,                                        # (tar_len)
+            "targets_mask": np.ones_like(targets),                      # (tar_len)
+            "targets_lengths": np.asarray(targets.shape[0]),            # (1)
         })
         return inputs
         
@@ -158,7 +163,7 @@ def pad_collate_fn(
     
     keys = batch[0].keys()
     pad_keys = pad_dict.keys()
-    array_keys = [k for k in keys if isinstance(batch[0][k],np.ndarray)]
+    array_keys = [k for k in keys if isinstance(batch[0][k],np.ndarray) and batch[0][k].dtype.type != np.str_]
     assert set(pad_keys).issubset(array_keys), f"Can't pad keys which are not arrays: {set(pad_keys)-set(array_keys)} "
     
     padded_batch = {}

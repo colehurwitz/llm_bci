@@ -85,8 +85,6 @@ class NormAndNoise(nn.Module):
         if self.normalize:
             if config.norm == "layernorm":
                 self.norm = nn.LayerNorm(input_size)
-            elif config.norm == "scalenorm":
-                self.norm = ScaleNorm(input_size ** 0.5)
             elif config.norm == "zscore":
                 self.norm = None
             else:
@@ -134,41 +132,21 @@ class NeuralEmbeddingLayer(nn.Module):
         super().__init__()
 
         self.adapt = config.adapt
+        self.pos = config.pos
+        self.block_token = config.block_token
+        self.day_token = config.day_token
         self.bias = config.bias
-        self.input_dim = config.n_channels*config.mult
+        self.input_dim = config.input_dim
 
         if self.adapt:
-             # One embedding layer for each day
-            if config.mode == "linear":
-                self.embed_spikes = nn.ModuleList([
-                    nn.Linear(config.n_channels, self.input_dim, bias=config.bias) 
-                for i in range(config.n_dates)])
-
-            elif config.mode == "embed":
-                self.embed_spikes = nn.ModuleList([
-                    nn.Sequential(
-                        nn.Embedding(config.max_spikes, config.mult),
-                        nn.Flatten(start_dim=-2)
-                    )
-                for i in range(config.n_dates)])
-            else:
-                raise Exception(f"Embedding mode {config.mode} cannot be adaptative")
+            # One embedding layer for each day
+            self.embed_spikes = nn.ModuleList([
+                nn.Linear(config.n_channels, self.input_dim, bias=config.bias) 
+            for i in range(config.n_days)])
         else:
             # One common embedding layer
-            if config.mode == "linear":
-                self.embed_spikes = nn.Linear(config.n_channels, self.input_dim, bias=config.bias)
-            elif config.mode == "embed":
-                self.embed_spikes = nn.Sequential(
-                    nn.Embedding(config.max_spikes, config.mult),
-                    nn.Flatten(start_dim=-2)
-                )
-            elif config.mode == "identity":
-                self.embed_spikes = nn.Identity()
-            else:
-                raise Exception(f"Invalid embed mode {config.mode}.")
+            self.embed_spikes = nn.Linear(config.n_channels, self.input_dim, bias=config.bias)
 
-        if config.mode == "embed" and config.fixup_init:
-            self.fixup_initialization(config.init_range, config.spike_log_init, config.max_spikes, adapt=self.adapt)
 
         # Stacking
         self.stack = config.stack.active
@@ -177,41 +155,43 @@ class NeuralEmbeddingLayer(nn.Module):
             self.stack_stride = config.stack.stride
             self.stacking = nn.Unfold(kernel_size=(config.stack.size, self.input_dim),stride=(config.stack.stride,1))
             self.stacking_mask = nn.Unfold(kernel_size=(config.stack.size, 1),stride=(config.stack.stride,1))
-            self.stack_projection = nn.Linear(self.input_dim*config.stack.size,hidden_size)
+            self.stack_projection = nn.Linear(self.input_dim*config.stack.size, hidden_size)
         else:
             self.projection = nn.Linear(self.input_dim, hidden_size)
 
         # Activation after embedding
         self.act = ACT2FN[config.act] if config.act != "identity" else nn.Identity()
 
-        # Embedding scale
-        self.scale = hidden_size ** 0.5 if config.scale == None else config.scale
-
         # Embed postion
-        self.pos = config.pos
         if self.pos:
             self.embed_pos = nn.Embedding(config.max_F, hidden_size)
+        
+        if self.block_token:
+            self.block_embedding = nn.Embedding(config.n_blocks, hidden_size)
+
+        if self.day_token:
+            self.day_embedding = nn.Embedding(config.n_days, hidden_size)
 
         # Regularization
         self.dropout = nn.Dropout(config.dropout)
 
     def forward(
             self, 
-            spikes:           torch.FloatTensor,      # (bs, seq_len, n_channels)
-            spikes_mask:      Optional[torch.LongTensor],          # (bs, seq_len)
-            spikes_timestamp: Optional[torch.LongTensor],          # (bs, seq_len)
+            spikes:             torch.FloatTensor,      # (bs, seq_len, n_channels)
+            spikes_mask:        Optional[torch.LongTensor],          # (bs, seq_len)
+            spikes_timestamp:   Optional[torch.LongTensor],          # (bs, seq_len)
             block_idx:          Optional[torch.LongTensor] = None,   # (bs)
-            date_idx:           Optional[torch.LongTensor] = None,   # (bs)
+            day_idx:            Optional[torch.LongTensor] = None,   # (bs)
         ) -> Tuple[torch.FloatTensor,torch.LongTensor,torch.LongTensor]:   # (bs, new_seq_len, hidden_size),  (bs, new_seq_len), (bs, new_seq_len)
 
         # Embed spikes
         if self.adapt:
-            x = torch.stack([self.embed_spikes[date_idx[i]](f) for i, f in enumerate(spikes)], 0)
+            x = torch.stack([self.embed_spikes[day_idx[i]](f) for i, f in enumerate(spikes)], 0)
         else:
             x = self.embed_spikes(spikes)
 
         # Rescaling
-        x = self.act(x) * self.scale
+        x = self.act(x)
 
         # Stacking
         if self.stack:
@@ -219,11 +199,23 @@ class NeuralEmbeddingLayer(nn.Module):
             spikes_timestamp = spikes_timestamp[:,:x.size(1)] # keep the first positions
             spikes_mask = self.stacking_mask(spikes_mask.unsqueeze(-1).unsqueeze(1).float()).transpose(1,2).prod(-1).to(spikes_mask.dtype) # unmask only spikes tha come from unmasked spikes
         else:
-            x = self.projection(x)
+            x = self.projection(x)  # (bs, new_seq_len, hidden_size)
 
         # Embed position
         if self.pos:
             x += self.embed_pos(spikes_timestamp)
+        
+        # Add block token
+        if self.block_token:
+            block_embeds = self.block_embedding(block_idx).unsqueeze(1)
+            x = torch.cat((block_embeds, x), dim=1)
+            spikes_mask = torch.cat((torch.ones_like(spikes_mask[:,:1]), spikes_mask), dim=1)
+
+        # Add day token
+        if self.day_token:
+            day_embeds = self.day_embedding(day_idx).unsqueeze(1)
+            x = torch.cat((day_embeds, x), dim=1)
+            spikes_mask = torch.cat((torch.ones_like(spikes_mask[:,:1]), spikes_mask), dim=1)
 
         return self.dropout(x), spikes_mask, spikes_timestamp
 
@@ -232,31 +224,7 @@ class NeuralEmbeddingLayer(nn.Module):
     def get_stacked_lens(self, lens):
         return lens if not self.stack else (1 + (lens - self.stack_size) / self.stack_stride).to(lens.dtype)
 
-    # Initialization methods copied from NDT
-    def fixup_initialization(self, init_range, spike_log_init, max_spikes, adapt):
-        if adapt:
-            for i in range(len(self.embed_spikes)):
-                if spike_log_init:
-                    # Use a log scale, since we expect spike semantics to follow compressive distribution
-                    log_scale = torch.arange(1, max_spikes+1).float().log() # 1 to lg
-                    log_scale = (log_scale - log_scale.mean()) / (log_scale[-1] - log_scale[0])
-                    log_scale = log_scale * init_range
-                    # Add some noise
-                    self.embed_spikes[i][0].weight.data.uniform_(-init_range / 10, init_range / 10)
-                    self.embed_spikes[i][0].weight.data += log_scale.unsqueeze(1).expand_as(self.embed_spikes[i][0].weight.data)
-                else:
-                    self.embed_spikes[i][0].weight.data.uniform_(-init_range, init_range)
-        else:
-            if spike_log_init:
-                # Use a log scale, since we expect spike semantics to follow compressive distribution
-                log_scale = torch.arange(1, max_spikes+1).float().log() # 1 to lg
-                log_scale = (log_scale - log_scale.mean()) / (log_scale[-1] - log_scale[0])
-                log_scale = log_scale * init_range
-                # Add some noise
-                self.embed_spikes[0].weight.data.uniform_(-init_range / 10, init_range / 10)
-                self.embed_spikes[0].weight.data += log_scale.unsqueeze(1).expand_as(self.embed_spikes[0].weight.data)
-            else:
-                self.embed_spikes[0].weight.data.uniform_(-init_range, init_range)
+    
 
 
 # MLP
@@ -299,7 +267,7 @@ class NeuralAttention(nn.Module):
 
         # Flash attention
         # torch.backends.cuda.enable_flash_sdp(True)
-        self.flash_attention = partial(torch.nn.functional.scaled_dot_product_attention, dropout_p=dropout, is_causal=False)
+        self.attn_dropout = dropout
 
         # Final projection
         self.dropout = nn.Dropout(dropout)
@@ -335,7 +303,7 @@ class NeuralAttention(nn.Module):
             q, k = apply_rotary_pos_emb(q, k, timestamp, self.cos, self.sin, 1)  # (B,n_heads,T,head_size)
 
         # Compute attention efficiently
-        out = self.flash_attention(q, k, v, attn_mask=attn_mask)                 # (B,n_heads,T,head_size)
+        out = F.scaled_dot_product_attention(q, k, v, attn_mask=attn_mask, dropout_p=(self.attn_dropout if self.training else 0.0), is_causal=False) # (B,n_heads,T,head_size)
         out = out.transpose(1, 2).contiguous().view(B,T, self.hidden_size)       # (B, T, hidden_size)
 
         return self.out_proj(self.dropout(out)) # (B, T, hidden_size)
@@ -355,9 +323,9 @@ class NeuralEncoderLayer(nn.Module):
         self.use_rope = config.use_rope
 
         # Encoder block
-        self.ln1 = ScaleNorm(config.hidden_size ** 0.5) if config.use_scalenorm else nn.LayerNorm(config.hidden_size) 
+        self.ln1 = nn.LayerNorm(config.hidden_size) 
         self.attn = NeuralAttention(idx, config.hidden_size, config.n_heads, config.attention_bias, config.dropout, config.use_rope, config.rope_theta, max_F)
-        self.ln2 = ScaleNorm(config.hidden_size ** 0.5) if config.use_scalenorm else nn.LayerNorm(config.hidden_size) 
+        self.ln2 = nn.LayerNorm(config.hidden_size) 
         self.mlp = NeuralMLP(config.hidden_size, config.inter_size, config.act, config.mlp_bias, config.dropout)
 
         if config.fixup_init:
@@ -430,14 +398,11 @@ class NeuralEncoder(nn.Module):
     ):
         super().__init__() 
 
-        self.int_spikes = config.embedder.mode == "embed"
         self.hidden_size = config.transformer.hidden_size
         self.n_layers = config.transformer.n_layers
 
         # Masker
-        self.mask = config.masker.active
-        if self.mask:
-            self.masker = Masker(config.masker)
+        self.masker = nn.ModuleList([Masker(DictConfig(m_config)) for m_config in config.masker.values()])
 
         # Context span mask
         context_mask = create_context_mask(config.context.forward, config.context.backward, config.embedder.max_F)
@@ -451,7 +416,7 @@ class NeuralEncoder(nn.Module):
 
         # Transformer
         self.layers = nn.ModuleList([NeuralEncoderLayer(idx, config.embedder.max_F, config.transformer) for idx in range(self.n_layers)])
-        self.out_norm = ScaleNorm(self.hidden_size ** 0.5) if config.transformer.use_scalenorm else nn.LayerNorm(self.hidden_size) 
+        self.out_norm = nn.LayerNorm(self.hidden_size) 
        
         # Out projection
         self.out_proj = NeuralFactorsProjection(self.hidden_size, config.factors)
@@ -462,30 +427,26 @@ class NeuralEncoder(nn.Module):
             spikes:             torch.FloatTensor,  # (bs, seq_len, n_channels)
             spikes_mask:        torch.LongTensor,   # (bs, seq_len)
             spikes_timestamp:   torch.LongTensor,   # (bs, seq_len)
-            spikes_lengths:   torch.LongTensor,   # (bs)
-            block_idx:          Optional[torch.LongTensor] = None,   # (bs)
-            date_idx:           Optional[torch.LongTensor] = None,   # (bs)
+            spikes_lengths:     torch.LongTensor,   # (bs)
+            block_idx:          Optional[torch.LongTensor]  = None,   # (bs)
+            day_idx:           Optional[torch.LongTensor]   = None,   # (bs)
     ) -> Tuple[torch.FloatTensor, torch.LongTensor]:    # [(bs, seq_len, hidden_size), (bs, seq_len, n_channels)]
         
         B, T, N = spikes.size() # batch size, fea len, n_channels
 
-        if self.int_spikes:
-            spikes = spikes.to(torch.int64)
-        
         # Normalize across channels and add noise
         spikes = self.norm_and_noise(spikes)
 
-
         # Mask neural data. Mask is True for masked bins
-        if self.mask:
-            spikes, targets_mask = self.masker(spikes)
-        else:
-            targets_mask = torch.zeros_like(spikes, dtype=torch.int64)
+        targets_mask = torch.zeros_like(spikes, dtype=torch.int64)
+        for masker in self.masker:
+            spikes, new_mask = masker(spikes)
+            targets_mask = targets_mask | new_mask
 
         # Embed neural data
-        x, spikes_mask, spikes_timestamp = self.embedder(spikes, spikes_mask, spikes_timestamp, block_idx, date_idx)
+        x, spikes_mask, spikes_timestamp = self.embedder(spikes, spikes_mask, spikes_timestamp, block_idx, day_idx)
 
-        _, T, _ = x.size() # feature len may have changed after stacking
+        _, T, _ = x.size() # spikes len may have changed after stacking
 
         # Prepare mask
         context_mask = self.context_mask[:T,:T].to(x.device).unsqueeze(0).expand(B,T,T)
@@ -498,6 +459,12 @@ class NeuralEncoder(nn.Module):
             x = layer(x, attn_mask=attn_mask, timestamp=spikes_timestamp)
         x = self.out_norm(x)
 
+        # Remove block and day tokens at the beginning
+        if self.embedder.day_token:
+            x = x[:,1:,:]
+        if self.embedder.block_token:
+            x = x[:,1:,:]
+        
         return self.out_proj(x), targets_mask
 
 
@@ -518,7 +485,7 @@ class NDT1(nn.Module):
         # Build encoder
         encoder_pt_path = config["encoder"].pop("from_pt", None)
         if encoder_pt_path is not None:
-            encoder_config = os.path.join(encoder_pt_path, "encoder_config.yaml")
+            encoder_config = torch.load(os.path.join(encoder_pt_path, "encoder_config.pth"))
             config["encoder"] = update_config(config.encoder, encoder_config)
         self.encoder = NeuralEncoder(config.encoder)
 
@@ -544,15 +511,15 @@ class NDT1(nn.Module):
         decoder_layers = []
         decoder_layers.append(nn.Linear(self.encoder.out_proj.out_size, n_outputs))
 
-        if self.method in ["ctc","autoregressive"] and (kwargs["loss"] == "mse" or not kwargs["log_input"]):
+        if self.method in ["mlm","autoregressive"] and (kwargs["loss"] == "mse" or not kwargs["log_input"]):
             decoder_layers.append(nn.ReLU()) # If we're not using loginput, we need to feed positive rates. If we are using MSE we need to feed positive spikes
         elif self.method == "ctc":
             decoder_layers.append(nn.LogSoftmax(dim=-1))  # CTC loss asks for log-softmax-normalized logits
         self.decoder = nn.Sequential(*decoder_layers)
 
         # Load decoder weights
-        if config["decoder"].pop("from_pt", None) is not None:
-            self.decoder.load_state_dict(torch.load(os.path.join(config.decoder.from_pt,"decoder.bin")))
+        if encoder_pt_path is not None:
+            self.decoder.load_state_dict(torch.load(os.path.join(encoder_pt_path,"decoder.bin")))
 
         # Build loss function
         if self.method in ["mlm","autoregressive"]:
@@ -580,15 +547,16 @@ class NDT1(nn.Module):
         targets:          Optional[torch.FloatTensor] = None,  # (bs, tar_len) 
         targets_lengths:  Optional[torch.LongTensor] = None,   # (bs)
         block_idx:        Optional[torch.LongTensor] = None,   # (bs)
-        date_idx:         Optional[torch.LongTensor] = None,   # (bs)
+        day_idx:         Optional[torch.LongTensor] = None,   # (bs)
     ) -> NDT1Output:      
-
+        
         if self.method in ["mlm","autoregressive"]:
             assert targets is None, "No targets needed for ssl"
             targets = spikes.clone()
 
         # Encode neural data. x is the masked embedded spikes. targets_mask is True for masked bins
-        x, targets_mask = self.encoder(spikes, spikes_mask, spikes_timestamp, spikes_lengths, block_idx, date_idx)
+        x, targets_mask = self.encoder(spikes, spikes_mask, spikes_timestamp, spikes_lengths, block_idx, day_idx)   # (bs, seq_len,hidden_size)
+
         spikes_lengths = self.encoder.embedder.get_stacked_lens(spikes_lengths) # Corrected lengths after stacking
 
         # Predict rates/ctc-logits from embeddedings
@@ -629,7 +597,7 @@ class NDT1(nn.Module):
 
         elif self.method == "ctc":
             loss = self.loss_fn(log_probs=preds.transpose(0,1), targets=targets, input_lengths=spikes_lengths, target_lengths=targets_lengths).sum()
-            n_examples = torch.tensor(len(targets), device=loss.device, dtype=torch.long)
+            n_examples = torch.tensor(spikes.size(0), device=spikes.device, dtype=torch.int64)
 
             return NDT1Output(
                 loss=loss,
@@ -646,14 +614,14 @@ class NDT1(nn.Module):
         spikes_timestamp:   Optional[torch.LongTensor]  = None, # (bs, seq_len)
         spikes_lengths:     Optional[torch.LongTensor]  = None, # (bs)
         block_idx:          Optional[torch.LongTensor]  = None, # (bs)
-        date_idx:           Optional[torch.LongTensor]  = None, # (bs)
+        day_idx:           Optional[torch.LongTensor]  = None, # (bs)
         max_new_bins:       Optional[int]               = 16,        
     ) -> NDT1Output:   
 
         if self.method == "mlm":
-            return self.generate_mlm(spikes, spikes_mask, spikes_timestamp, spikes_lengths, block_idx, date_idx, max_new_bins)
+            return self.generate_mlm(spikes, spikes_mask, spikes_timestamp, spikes_lengths, block_idx, day_idx, max_new_bins)
         elif self.method == "autoregressive":
-            return self.generate_autoregressive(spikes, spikes_mask, spikes_timestamp, spikes_lengths, block_idx, date_idx, max_new_bins)
+            return self.generate_autoregressive(spikes, spikes_mask, spikes_timestamp, spikes_lengths, block_idx, day_idx, max_new_bins)
 
     def generate_autoregressive(
         self, 
@@ -662,7 +630,7 @@ class NDT1(nn.Module):
         spikes_timestamp:   Optional[torch.LongTensor]  = None, # (bs, seq_len)
         spikes_lengths:     Optional[torch.LongTensor]  = None, # (bs)
         block_idx:          Optional[torch.LongTensor]  = None, # (bs)
-        date_idx:           Optional[torch.LongTensor]  = None, # (bs)
+        day_idx:           Optional[torch.LongTensor]  = None, # (bs)
         max_new_bins:       Optional[int]               = 16,        
     ) -> NDT1Output:      
 
@@ -710,7 +678,7 @@ class NDT1(nn.Module):
         spikes_timestamp:   Optional[torch.LongTensor]  = None, # (bs, seq_len)
         spikes_lengths:     Optional[torch.LongTensor]  = None, # (bs)
         block_idx:          Optional[torch.LongTensor]  = None, # (bs)
-        date_idx:           Optional[torch.LongTensor]  = None, # (bs)
+        day_idx:           Optional[torch.LongTensor]  = None, # (bs)
         max_new_bins:       Optional[int]               = 16,        
     ) -> NDT1Output:      
 
@@ -758,22 +726,9 @@ class NDT1(nn.Module):
 
     def save_checkpoint(self, save_dir):
         torch.save(self.encoder.state_dict(), os.path.join(save_dir,"encoder.bin"))
-        torch.save(dict(self.config.encoder), os.path.join(save_dir,"encoder_config.yaml"))
+        torch.save(dict(self.config.encoder), os.path.join(save_dir,"encoder_config.pth"))
         torch.save(self.decoder.state_dict(), os.path.join(save_dir,"decoder.bin"))
 
     def load_checkpoint(self, load_dir):
         self.encoder.load_state_dict(torch.load(os.path.join(load_dir,"encoder.bin")))
         self.decoder.load_state_dict(torch.load(os.path.join(load_dir,"decoder.bin")))
-
-
-
-class ScaleNorm(nn.Module):
-
-    def __init__(self, scale, eps=1e-5):
-        super().__init__()
-        self.scale = nn.Parameter(torch.tensor(scale))
-        self.eps = eps
-
-    def forward(self, x):
-        norm = self.scale / torch.norm(x, dim=-1, keepdim=True).clamp(min=self.eps)
-        return x * norm

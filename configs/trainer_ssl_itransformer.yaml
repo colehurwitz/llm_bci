@@ -14,20 +14,21 @@ dirs:
 
 # Training configuration
 training:
-  num_epochs: 1000
+  num_epochs: 100
   train_batch_size: 16
   test_batch_size: 16   
-  shuffle_test_dataloader: true    # Shuffle test dataloader between epochs
+  shuffle_test_dataloader: false    # Shuffle test dataloader between epochs
+  drop_last_test_dataloader: true   # Drop last batch of test dataloader to ensure same batch size
 
-  save_every: 1500 # Save checkpoint
-  eval_every: 500  # Eval model
+  save_every: 100 # Save checkpoint
+  eval_every: 100  # Eval model
 
 
 
 model: include:configs/itransformer.yaml
 
 data:
-  dataset_class: ssl
+  dataset_class: base
 
   hf_dataset_name: null
   json_dataset_name: null
@@ -37,10 +38,17 @@ data:
   train_len: null     # used length of the train dataset. null to use all
   test_len: null      # used length of the test dataset. null to use all
 
-  data_load: file # file/speechbci
-  data_file: /home/gridsan/dbeneto/MAML-Soljacic_shared/BCI/data/ibl_choice_0.pth
+  data_load: ibl # ibl/file/speechbci
 
-  dataset_dir: /home/gridsan/dbeneto/MAML-Soljacic_shared/BCI/data/competitionData
+  eid: 671c7ea7-6726-4fbe-adeb-f89c2c8e489b/20ms
+  test_size: 0.15
+  static_behaviours: ["block","choice","reward"]
+  dynamic_behaviours: []
+  norm_behaviours: false
+  seed: 42
+  data_file: null
+
+  data_dir: /home/gridsan/dbeneto/MAML-Soljacic_shared/BCI/data
   zscore: false
   features: ["tx1"]
   date_idxs: null
@@ -76,6 +84,13 @@ method:
         value: 0
         truncate: null
         min_length: null
+      spikes_spacestamp:
+        dim: 0
+        side: left
+        value: 0
+        truncate: null
+        min_length: null
+
 
   metric_kwargs: {}
 
@@ -86,5 +101,5 @@ optimizer:
   eps: 1.e-8
   warmup_pct: 0.15 # cosine/linear
   gamma: 0.95     # step
-  div_factor: 10  # cosine
+  div_factor: 25  # cosine
   scheduler: cosine # step/cosine/linear

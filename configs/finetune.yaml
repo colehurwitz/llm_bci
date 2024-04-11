@@ -39,8 +39,8 @@ lora:
   r: 1
   alpha: 32
   dropout: 0.2
-  target_modules: ["q_proj","v_proj"]
-  modules_to_save: null #["embed_tokens"]
+  target_modules: ["q_proj","v_proj","k_proj","o_proj","gate_proj","up_proj","down_proj"]
+  modules_to_save: ["embed_tokens"]
 
 generation:
   max_new_tokens: 20

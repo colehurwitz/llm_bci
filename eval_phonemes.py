@@ -41,7 +41,7 @@ if os.path.isfile(adapter_file):
 model.to("cuda")
 
 
-tokenizer = AutoTokenizer.from_pretrained(config.dirs.tokenizer_dir, padding_side='left', add_bos_token=False, add_eos_token=False)
+tokenizer = AutoTokenizer.from_pretrained(config.dirs.tokenizer_dir, add_bos_token=False, add_eos_token=False)
 pad_id = tokenizer.eos_token_id
 g2p = G2p()
 
@@ -66,24 +66,18 @@ train_iter = iter(train_dataloader)
 test_iter = iter(test_dataloader)
 
 
-beams = 2
+beams = 5
 gen_config = {
     "max_new_tokens": 20, 
-    "do_sample": True, "temperature": 1.0,  "top_p": 0.6, "top_k": 40, 
+    "do_sample": False, #"temperature": 1.0,  "top_p": 0.6, "top_k": 40, 
     "num_beams": beams, 
-    # "num_beam_groups": beams, "diversity_penalty": 1.2,
-    # "repetition_penalty": 1.0, "length_penalty": 1.0, "no_repeat_ngram_size": 2, 
-    # "renormalize_logits": True, 
+    "num_beam_groups": beams, "diversity_penalty": 1.2,
+    "repetition_penalty": 1.0, "length_penalty": 1.0, "no_repeat_ngram_size": 2, 
+    "renormalize_logits": True, 
     "low_memory": True,
-    "num_return_sequences": beams, #"output_scores": True, "return_dict_in_generate": True,
+    "num_return_sequences": beams, "output_scores": True, "return_dict_in_generate": True,
     "pad_token_id": pad_id
 }
-# model.llm.generate(inputs_embeds=inputs_embeds, attention_mask=attention_mask, **gen_config, synced_gpus=synced_gpus)
-
-llm.to("cuda")
-inputs = tokenizer(tokenizer.bos_token + "Hello my name is ", return_tensors="pt")
-inputs = {k: v.to("cuda") for k,v in inputs.items()}
-tokenizer.batch_decode(llm.generate(**inputs, max_new_tokens=10))
 
 from time import perf_counter
 
@@ -95,8 +89,6 @@ all_scores = []
 time_b = 0.
 time_c = 0.
 for i, (model_inputs, prompt_inputs, sentence, true_ph, pred_ph) in tqdm(enumerate(test_dataloader)):
-    if i > 1:
-        pass
     a = perf_counter()
     prompt_inputs = {k: v.to("cuda") if isinstance(v, torch.Tensor) else [sub_v.to("cuda") for sub_v in v] for k,v in prompt_inputs.items()}
     preds = model.generate(**prompt_inputs, **gen_config, synced_gpus=None)
@@ -124,6 +116,16 @@ print(time_b, time_c)
 torch.save({"errors": all_errors, "words": all_words, "pairs": all_pairs, "sentences": all_sentences, "scores": all_scores}, f"data{beams}.pth")
 
 
+# model.llm.generate(inputs_embeds=inputs_embeds, attention_mask=attention_mask, **gen_config, synced_gpus=synced_gpus)
+
+llm.to("cuda")
+inputs = tokenizer(tokenizer.bos_token + "My name is", return_tensors="pt")
+inputs = {k: v.to("cuda") for k,v in inputs.items()}
+# tokenizer.batch_decode(llm.generate(**inputs, max_new_tokens=10))
+inputs_embeds = llm.get_input_embeddings()(inputs["input_ids"])
+tokenizer.batch_decode(llm.generate(inputs_embeds=inputs_embeds, attention_mask=inputs["attention_mask"], max_new_tokens=20), skip_special_tokens=True)
+
+
 import torch
 from utils.eval_utils import word_error_count
 d = torch.load("data5.pth")
@@ -132,7 +134,7 @@ all_pairs = d["pairs"]
 llama_errors = 0
 llama_words = 0
 a=0
-b=64
+b=-1
 for s, p in zip(all_sentences[a:b], all_pairs[a:b]):
     best = 100
     best_pred = None
@@ -189,17 +191,19 @@ errors/words
 
 
 
-# llama_errors = 0
-# llama_words = 0
-# for s, p in zip(sentences, pairs):  
-#     sorted_p = sorted(p, key=lambda x: -x[0])
-#     errors, words = word_error_count(sorted_p[0][1].strip(), s.strip())    
-#     llama_errors += errors
-#     llama_words += words
-#     # print(s, sorted_p[0][0], errors)
+llama_errors = []
+llama_words = []
+wer =[]
+for s, p in zip(all_sentences, all_pairs):  
+    sorted_p = sorted(p, key=lambda x: -x[0])
+    errors, words = word_error_count(sorted_p[0][1].strip(), s.strip())    
+    llama_errors.append(errors)
+    llama_words.append(words)
+    wer.append(errors/words)
+    # print(s, sorted_p[0][0], errors)
 
 
-# llama_errors/llama_words
+llama_errors/llama_words
 
 
 

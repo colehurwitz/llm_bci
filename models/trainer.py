@@ -21,14 +21,14 @@ from accelerate import Accelerator
 from datasets import load_dataset
 
 from utils.config_utils import DictConfig, config_from_kwargs, update_config
-from data_utils.datasets import SpikingDataset, SpikingDatasetForCTC, pad_collate_fn
+from data_utils.datasets import SpikingDataset, SpikingDatasetForDecoding, pad_collate_fn
 from models.patchtst import PatchTSTForSpikingActivity
 from models.itransformer import iTransformer
 from models.ndt1 import NDT1
 
 """ Mapping from dataset class names to dataset class. New dataset classes should be registered here
 """
-NAME2DATASET = {"ssl": SpikingDataset, "ctc": SpikingDatasetForCTC}
+NAME2DATASET = {"base": SpikingDataset, "decoding": SpikingDatasetForDecoding}
 
 """ Mapping from model class names to model class. New model classes should be registered here
 """
@@ -203,8 +203,8 @@ class Trainer():
         self.print_v("Building dataloaders", verbosity=0)
         # Get name of Dataset class
         dataset_class = NAME2DATASET[self.config.data.dataset_class]
-        self.train_dataset = dataset_class(self.dataset[self.config.data.train_name], self.config.data.train_len, **self.config.method.dataset_kwargs)
-        self.test_dataset = dataset_class(self.dataset[self.config.data.test_name], self.config.data.test_len, **self.config.method.dataset_kwargs)
+        self.train_dataset = dataset_class(self.dataset[self.config.data.train_name], length=self.config.data.train_len, **self.config.method.dataset_kwargs)
+        self.test_dataset = dataset_class(self.dataset[self.config.data.test_name], length=self.config.data.test_len, **self.config.method.dataset_kwargs)
 
         # ToDo Custom DataLoaders?
         self.train_dataloader = DataLoader(
@@ -212,7 +212,7 @@ class Trainer():
         )
 
         self.test_dataloader = DataLoader(
-            self.test_dataset, shuffle=self.config.training.shuffle_test_dataloader, collate_fn=partial(pad_collate_fn, model_inputs=self.model_inputs, **self.config.method.dataloader_kwargs), batch_size=self.config.training.test_batch_size, pin_memory=True, drop_last=True
+            self.test_dataset, shuffle=self.config.training.shuffle_test_dataloader, collate_fn=partial(pad_collate_fn, model_inputs=self.model_inputs, **self.config.method.dataloader_kwargs), batch_size=self.config.training.test_batch_size, pin_memory=True, drop_last=self.config.training.drop_last_test_dataloader,
         )
 
 
@@ -269,8 +269,9 @@ class Trainer():
         additional_metric_fns: Optional[Dict[str,Callable]] = None,
         eval_train_set: Optional[bool] = False,
     ):
-        metric_fns = additional_metric_fns if additional_metric_fns else {}
-        metric_fns.update(self.metric_fns)
+        metric_fns = dict(**self.metric_fns)
+        metric_fns.update(additional_metric_fns if additional_metric_fns else {})
+        
 
         # Test metrics
         test_loss = []
@@ -278,7 +279,7 @@ class Trainer():
         test_metrics = {name: [] for name in metric_fns.keys()}
         
         self.model.eval()
-
+        
         dataloader = self.test_dataloader if not eval_train_set else self.train_dataloader
         for test_step, (model_inputs, unused_inputs) in enumerate(tqdm(dataloader) if self.verbosity <= 1 else self.test_dataloader):
             
@@ -308,7 +309,7 @@ class Trainer():
         
         config = self.config
 
-        self.print_v(f"Starting run {config.savestring} with config: ", verbosity=0)
+        self.print_v(f"Starting run {config.savestring}", verbosity=0)
     
         # Train
         global_step = 1

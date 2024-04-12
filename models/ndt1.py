@@ -115,10 +115,10 @@ class NormAndNoise(nn.Module):
             else:
                 spikes = self.norm(spikes)
 
-        if self.white_noise_sd is not None:
+        if self.white_noise_sd is not None and self.training:
             spikes += self.white_noise_sd*torch.randn(B,T,N, dtype=spikes.dtype, device=spikes.device)
 
-        if self.constant_offset_sd is not None:
+        if self.constant_offset_sd is not None and self.training:
             spikes += self.constant_offset_sd*torch.randn(B,1,N, dtype=spikes.dtype, device=spikes.device)
 
         
@@ -197,7 +197,8 @@ class NeuralEmbeddingLayer(nn.Module):
         if self.stack:
             x = self.stack_projection(self.stacking(x.unsqueeze(1)).transpose(1,2))
             spikes_timestamp = spikes_timestamp[:,:x.size(1)] # keep the first positions
-            spikes_mask = self.stacking_mask(spikes_mask.unsqueeze(-1).unsqueeze(1).float()).transpose(1,2).prod(-1).to(spikes_mask.dtype) # unmask only spikes tha come from unmasked spikes
+            spikes_mask = self.stacking_mask(spikes_mask.unsqueeze(-1).unsqueeze(1).float()).transpose(1,2).to(spikes_mask.dtype)
+            spikes_mask = spikes_mask.prod(-1) # unmask only spikes tha come from unmasked spikes
         else:
             x = self.projection(x)  # (bs, new_seq_len, hidden_size)
 
@@ -450,9 +451,8 @@ class NeuralEncoder(nn.Module):
 
         # Prepare mask
         context_mask = self.context_mask[:T,:T].to(x.device).unsqueeze(0).expand(B,T,T)
-        spikes_mask = spikes_mask.unsqueeze(1).expand(B,T,T)
         self_mask = torch.eye(T).to(x.device, torch.int64).expand(B,T,T) # hack so that even padded spikes attend to themselves and avoid attention issues
-        attn_mask = self_mask | context_mask & spikes_mask
+        attn_mask = self_mask | context_mask & spikes_mask.unsqueeze(1).expand(B,T,T)
 
         # Forward transformer
         for idx, layer in enumerate(self.layers):
@@ -465,7 +465,7 @@ class NeuralEncoder(nn.Module):
         if self.embedder.block_token:
             x = x[:,1:,:]
         
-        return self.out_proj(x), targets_mask
+        return self.out_proj(x), spikes_mask, targets_mask
 
 
 
@@ -503,7 +503,7 @@ class NDT1(nn.Module):
             assert config.encoder.context.forward == 0, "Autoregressive training requires context.forward == 0"
             assert not config.encoder.embedder.stack.active, "Can't train autoregressive with stacked inputs"
             n_outputs = config.encoder.embedder.n_channels
-        elif self.method == "ctc":
+        elif self.method in ["ctc","endtoend"]:
             n_outputs = kwargs["vocab_size"]
         else:
             raise Exception(f"Method {self.method} not implemented yet for NDT1")
@@ -513,7 +513,7 @@ class NDT1(nn.Module):
 
         if self.method in ["mlm","autoregressive"] and (kwargs["loss"] == "mse" or not kwargs["log_input"]):
             decoder_layers.append(nn.ReLU()) # If we're not using loginput, we need to feed positive rates. If we are using MSE we need to feed positive spikes
-        elif self.method == "ctc":
+        elif self.method in ["ctc","endtoend"]:
             decoder_layers.append(nn.LogSoftmax(dim=-1))  # CTC loss asks for log-softmax-normalized logits
         self.decoder = nn.Sequential(*decoder_layers)
 
@@ -531,7 +531,7 @@ class NDT1(nn.Module):
                 self.loss_fn = nn.MSELoss(reduction="none")
             else:   
                 raise Exception(f"Loss {kwargs['loss']} not implemented yet for mlm")
-        elif self.method == "ctc":
+        elif self.method in ["ctc","endtoend"]:
              self.loss_fn = nn.CTCLoss(reduction="none", blank=kwargs["blank_id"], zero_infinity=kwargs["zero_infinity"])
         
         # Save config
@@ -555,7 +555,7 @@ class NDT1(nn.Module):
             targets = spikes.clone()
 
         # Encode neural data. x is the masked embedded spikes. targets_mask is True for masked bins
-        x, targets_mask = self.encoder(spikes, spikes_mask, spikes_timestamp, spikes_lengths, block_idx, day_idx)   # (bs, seq_len,hidden_size)
+        x, spikes_mask, targets_mask = self.encoder(spikes, spikes_mask, spikes_timestamp, spikes_lengths, block_idx, day_idx)   # (bs, seq_len,hidden_size)
 
         spikes_lengths = self.encoder.embedder.get_stacked_lens(spikes_lengths) # Corrected lengths after stacking
 
@@ -595,7 +595,7 @@ class NDT1(nn.Module):
                 mask=spikes_mask,
             )
 
-        elif self.method == "ctc":
+        elif self.method in ["ctc","endtoend"]:
             loss = self.loss_fn(log_probs=preds.transpose(0,1), targets=targets, input_lengths=spikes_lengths, target_lengths=targets_lengths).sum()
             n_examples = torch.tensor(spikes.size(0), device=spikes.device, dtype=torch.int64)
 

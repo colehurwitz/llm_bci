@@ -14,13 +14,12 @@ import utils
 import utils.eval_utils
 from utils.eval_utils import format_ctc, word_error_count
 
-import transformers
-import transformers.models
-from transformers.models import *
+from peft import LoraConfig, get_peft_model
+from transformers import AutoModelForCausalLM, LlamaConfig, AutoTokenizer
 
 import data_utils
 import data_utils.datasets
-from data_utils.speechbci_dataset import load_competition_data, create_phonemes_ctc_labels
+from data_utils.speechbci_dataset import load_competition_data, create_phonemes_ctc_labels, create_llm_labels
 from data_utils.ibl_dataset import load_ibl_dataset
 
 import models
@@ -45,41 +44,74 @@ from data_utils.datasets import *
 
 rl(models)
 rl(models.trainer)
-rl(models.patchtst)
+rl(models.bci)
 rl(models.itransformer)
 rl(models.ndt1)
-from models.patchtst import *
+from models.bci import *
 from models.ndt1 import *
 from models.itransformer import *
 from models.trainer import Trainer
-
 
 
 def probe(model, model_inputs, unused_inputs, outputs, **kwargs):
     a = {k: v.detach().cpu() if isinstance(v, torch.Tensor) else v for k,v in model_inputs.items()}
     b = {k: v.detach().cpu() if isinstance(v, torch.Tensor) else v for k,v in unused_inputs.items()}
     c = {k: v.detach().cpu() if isinstance(v, torch.Tensor) else v for k,v in outputs.items() if v is not None}
-    all_batches.append({"inputs": a, "unused": b, "outputs": c})
+    all_batch.append({"inputs": a, "unused": b, "outputs": c})
     return torch.tensor(0.0)
 
-def accuracy(model, model_inputs, unused_inputs, outputs, **kwargs):
-    preds = outputs["preds"].argmax(-1)
-    targets = model_inputs["targets"].squeeze(1)
-    acc = (preds == targets).sum() / preds.size(0)
-    return acc
+
+def wer(model, model_inputs, unused_inputs, outputs, **kwargs):
+    preds = outputs["preds"].argmax(-1)[:,:-1]
+    targets = outputs["targets"][:,1:]
+    pred_sentences = [tokenizer.decode(p[t!=100]) for t, p  in zip(targets,preds)]
+    target_sentences = unused_inputs["sentence"]
+    errors, n_words = word_error_count(pred_sentences, target_sentences)
+    for i in range(kwargs["n_print"]):
+        print(pred_sentences[i], "\n#####\n ", 
+            target_sentences[i], "\n#####\n\n ")
+    return torch.tensor(errors/n_words)
+
+
+llm = None
+def get_llm(debug, freeze_llm, llm_path, lora):
+    if debug:
+        llm_config = LlamaConfig(num_hidden_layers=2, hidden_size=32, intermediate_size=32,  num_attention_heads=4)
+        llm = AutoModelForCausalLM.from_config(llm_config)
+    else:
+        llm = AutoModelForCausalLM.from_pretrained(llm_path) 
+    if lora is not None:
+        peft_config = LoraConfig(
+            inference_mode=False, r=lora.r, lora_alpha=lora.alpha, lora_dropout=lora.dropout,
+            target_modules=lora.target_modules, modules_to_save=lora.modules_to_save,
+        )
+        llm = get_peft_model(llm, peft_config)  
+    if freeze_llm:
+        for param in llm.parameters():
+            param.requires_grad = False
+    return llm
+
+# Preload LLM
+debug = True
+freeze_llm = False
+llm_path = "/home/gridsan/dbeneto/MAML-Soljacic_shared/llama2/7b"
+lora = DictConfig({"r": 1, "alpha": 32, "dropout": 0.2, 
+      "target_modules": ["q_proj","v_proj","k_proj","o_proj","gate_proj","up_proj","down_proj"],
+      "modules_to_save": ["embed_tokens"]})
+llm = get_llm(debug, freeze_llm, llm_path, lora)
+
 
 kwargs = {
-    "savestring": "itransformer-671c7ea7-choice-test",
-    "training.num_epochs": "100", "training.train_batch_size": "16", "training.test_batch_size": "16",
+    "savestring": "bci_test",
+    "training.num_epochs": "500", "training.train_batch_size": "4", "training.test_batch_size": "4",
     "optimizer.gradient_accumulation_steps": "1",
     "training.eval_every": "100", "training.save_every": "100", 
     "data.train_len": "null", "data.test_len": "null",
-    "model": "include:configs/itransformer.yaml",
-    "data.data_load": "ibl",
-    "data.eid": "671c7ea7-6726-4fbe-adeb-f89c2c8e489b/stimulus_20ms",
-    "data.test_size": "0.15",
+    "model": "include:configs/bci.yaml",
 }
-
+config_file = "configs/trainer_bci.yaml"
+config = update_config(default_trainer_config(), config_file)
+config = update_config(config, config_from_kwargs(kwargs))
 
 # Load dataset
 if config.data.data_load == "file":
@@ -92,6 +124,9 @@ elif config.data.data_load == "speechbci":
         blank_id = config.method.model_kwargs.blank_id
         vocab = json.load(open(config.data.vocab_file,"r"))
         dataset = create_phonemes_ctc_labels(dataset, config.data.vocab_file)
+    if "tokenizer_path" in config["data"] and config.data.tokenizer_path is not None:
+        tokenizer = AutoTokenizer.from_pretrained(config.data.tokenizer_path, add_bos_token=False, add_eos_token=False)
+        dataset = create_llm_labels(dataset, tokenizer, config.data.prompt)
 
 
 # Adjust lablels for static behaviour decoding
@@ -106,29 +141,19 @@ if config.method.model_kwargs.method_name == "stat_behaviour" and config.method.
     config["method"]["model_kwargs"]["n_labels"] = len(all_labels)
 
 
-
-config_file = "configs/trainer_stat_behv_itransformer.yaml"
-config = update_config(default_trainer_config(), config_file)
-config = update_config(config, config_from_kwargs(kwargs))   
-
-# Get regions for region embeddings
-if config.model.model_class == "iTransformer" and config.model.encoder.embed_region:
-    config["model"]["encoder"]["regions"] = list(set(str(b) for a in [row["regions"] for rows in dataset.values() for row in rows] for b in a))
-
-
 # Adjust models based on dataset
+extra_model_kwargs = None
 spikes_name = "spikes" if "spikes" in dataset["train"][0] else config.method.dataset_kwargs.spikes_name
 if config.model.model_class in ["iTransformer","PatchTST"]:
-        
+    config["model"]["encoder"]["num_input_channels"] = dataset["train"][0][spikes_name].shape[1]
     # We need uniform lenght of the padded batches for PatchTST and iTransformer
     if config.model.model_class == "PatchTST":
-        config["model"]["encoder"]["num_input_channels"] = dataset["train"][0][spikes_name].shape[1]
         p = config.model.encoder.patch_length
         context = ((max(row[spikes_name].shape[0] for split in ["train","test"] for row in dataset[split]) + p-1) // p) * p
         config["model"]["encoder"]["context_length"] = context
     else:
         context = max(row[spikes_name].shape[0] for split in ["train","test"] for row in dataset[split])
-        config["model"]["encoder"]["embedder"]["max_n_bins"] = context
+        config["model"]["encoder"]["max_n_bins"] = context
     pad_update = DictConfig( {"method": {"dataloader_kwargs": {"pad_dict":
         {
             "spikes": 
@@ -158,14 +183,41 @@ if config.model.model_class in ["iTransformer","PatchTST"]:
     config = update_config(config, pad_update)
 elif config.model.model_class == "NDT1":
     config["model"]["encoder"]["embedder"]["n_channels"] = dataset["train"][0]["spikes"].shape[1]
+elif config.model.model_class == "BCI" and llm is not None:
+    if extra_model_kwargs is None:
+        extra_model_kwargs = {}
+    extra_model_kwargs["llm"] = llm
 
 
-trainer = Trainer(config, dataset=dataset, metric_fns={"A": probe}) #, "accuracy": accuracy})#, "WER": wer})
-all_batches = []
-trainer.train()
-all_batches = []
+
+rl(models)
+rl(models.trainer)
+rl(models.bci)
+rl(models.itransformer)
+rl(models.ndt1)
+from models.bci import *
+from models.ndt1 import *
+from models.itransformer import *
+from models.trainer import Trainer
+
+config["method"]["model_kwargs"]["load_ndt1_from_pt"] = "pt_checkpoints/ndt1-ctc-opt_64_1.e-3_5.e-5-nl_5-hs_1024-is_1024-d_0.4_0.2-noise_true-context_false_false_false/STEP12200"
+trainer = Trainer(config, dataset=dataset, extra_model_kwargs=extra_model_kwargs, metric_fns={"A": probe, "WER": wer})#, "WER": wer})
+all_batch = []
 trainer.evaluate(eval_train_set=False)
+trainer.train()
 
+a = torch.load("a.pth")
+b = torch.load("b.pth")
+input_ids = a[0]
+attention_mask = a[1]
+input_split = a[2]
+spikes = a[3]
+spikes_mask = a[4]
+targets = a[5]
+input_embeds = b[0]
+new_attention_mask = b[1]
+new_spikes_mask = b[2]
+new_targets = b[3]
 
 # config["model"]["encoder"]["from_pt"] = from_pt
 # config["model"]["decoder"]["from_pt"] = from_pt
@@ -179,11 +231,10 @@ trainer.evaluate(eval_train_set=False)
 # config["model"]["masker"]["mode"] = "full"
 # config["model"]["masker"]["mode"] = "full"
 
-from_pt = "pt_checkpoints/itransformer-671c7ea7-stimulus-20ms-0.15-mlm-opt_16_1.e-4_0.01-mask_true_true_0.2-arch_5_768-d_0.4_0.2-cls_false-embed_false_false_1500-mode_mlp/STEP5600"
+
+from_pt = "pt_checkpoints/ndt1-ctc-opt_64_1.e-3_5.e-5-nl_5-hs_1024-is_1024-d_0.4_0.2-noise_true-context_false_false_false/STEP12200"
 config = DictConfig(torch.load(os.path.join(from_pt, "trainer_config.pth")))
 trainer.model.load_checkpoint(from_pt)
-
-
 
 
 
@@ -200,7 +251,7 @@ else:
 all_preds = []
 all_targets = []
 all_stat_behv = {k: [] for k in static_behaviours}
-for b in all:
+for b in all_batch:
     inputs = b["inputs"]
     unused = b["unused"]
     outputs = b["outputs"]
@@ -332,16 +383,6 @@ plot_condition_averaged(targets, preds)
 
 
 
-def wer(model, model_inputs, unused_inputs, outputs, **kwargs):
-    preds = outputs["preds"].argmax(-1)
-    preds = [" ".join(format_ctc(pred, vocab, blank_id)) for pred in preds]
-    phonemes = [" ".join(p) for p in unused_inputs["phonemes"]]
-    errors, n_phonemes = word_error_count(preds, phonemes)
-    for i in range(kwargs["n_print"]):
-        print(preds[i].replace(" ","").replace("SIL"," SIL "), "\n#####\n ", 
-            phonemes[i].replace(" ","").replace("SIL"," SIL "),"\n#####\n ", 
-            unused_inputs["sentence"][i], "\n#####\n\n ")
-    return torch.tensor(errors/n_phonemes)
 
 
 
@@ -442,20 +483,4 @@ for i in range(max_new_bins):
 
 mse
 
-regions = dataset["train"][0]["regions"]
-embeds = trainer.model.encoder.channel_embeddings.weight[1:regions.shape[0]+1]
 
-sort_regions = np.argsort(regions)
-regions = regions[sort_regions]
-embeds = embeds[sort_regions]
-
-norm_embeds = torch.nn.functional.normalize(embeds, p=2, dim=1)
-similarity_matrix = torch.matmul(norm_embeds, norm_embeds.T).detach().cpu()
-similarity_matrix -= torch.diag(torch.ones(similarity_matrix.size(0)))
-
-plt.clf()
-plt.figure(figsize=(10, 8))
-plt.imshow(similarity_matrix, cmap='hot', interpolation='nearest')
-plt.colorbar()
-plt.title('Pairwise Cosine Similarity Matrix Of Neuron Position Embeddings')
-plt.savefig("plot.png")

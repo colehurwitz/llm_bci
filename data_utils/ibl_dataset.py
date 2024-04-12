@@ -30,7 +30,7 @@ OUTPUTS
 def load_ibl_dataset(
     data_dir:           str, 
     eid:                str,
-    test_size:          Optional[float] = 0.1, 
+    test_size:          Optional[float] = None, 
     static_behaviours:  Optional[List[str]] = [], 
     dynamic_behaviours: Optional[List[str]] = [],
     norm_behaviours:    Optional[bool] = False, 
@@ -41,11 +41,13 @@ def load_ibl_dataset(
     "Convert sparse data from IBL to binned spikes"
     def get_binned_spikes_from_sparse(spikes_sparse_data_list, spikes_sparse_indices_list, spikes_sparse_indptr_list, spikes_sparse_shape_list):
         sparse_binned_spikes = [csr_array((spikes_sparse_data_list[i], spikes_sparse_indices_list[i], spikes_sparse_indptr_list[i]), shape=spikes_sparse_shape_list[i]) for i in range(len(spikes_sparse_data_list))]
-        binned_spikes = np.array([csr_matrix.toarray() for csr_matrix in sparse_binned_spikes])
+        binned_spikes = np.array([csr_matrix.toarray() for csr_matrix in sparse_binned_spikes], dtype=np.float32)
         return binned_spikes
     
     # Get dict for each split
-    raw_dataset = load_from_disk(os.path.join(data_dir, eid)).train_test_split(test_size=test_size, seed=seed)
+    raw_dataset = load_from_disk(os.path.join(data_dir, eid))
+    if test_size is not None:
+        raw_dataset = raw_dataset.train_test_split(test_size=test_size, seed=seed)
     dataset_dict = {}
     for split in raw_dataset.keys():
         dataset_dict[split] = {}
@@ -75,3 +77,59 @@ def load_ibl_dataset(
 
 
     return dataset_dict
+
+
+
+def _time_extract(data):
+    data['time'] = data['intervals'][0]
+    return data
+
+
+""" Split aligned and unaligned dataset coherently
+"""
+def split_both_dataset(
+        aligned_dataset,
+        unaligned_dataset,
+        test_size=0.1,
+        shuffle=True,
+        seed=42
+):
+
+    aligned_dataset = aligned_dataset.map(_time_extract)
+    unaligned_dataset = unaligned_dataset.map(_time_extract)
+
+    # split the aligned data first
+    _tmp1 = aligned_dataset.train_test_split(train_size=1-test_size, test_size=test_size, shuffle=shuffle, seed=seed)
+    test_alg = _tmp1['test']
+    train_alg = _tmp1['train']
+
+
+    new_aligned_dataset = DatasetDict({
+        'train': train_alg,
+        'test': test_alg
+    })
+
+    # split the unaligned data according to the aligned data
+    times_test = test_alg['time']
+
+    train_idxs = []
+    test_idxs = []
+
+    for i, data_ual in enumerate(unaligned_dataset):
+        time_ual = data_ual['time']
+
+        if any(abs(time_ual - time_test) <= 2 for time_test in times_test):
+            test_idxs.append(i)
+
+        else:
+            train_idxs.append(i)
+
+    train_ual = unaligned_dataset.select(train_idxs)
+    test_ual = unaligned_dataset.select(test_idxs)
+
+    new_unaligned_dataset = DatasetDict({
+        'train': train_ual,
+        'test': test_ual
+    })
+
+    return new_aligned_dataset, new_unaligned_dataset

@@ -1,9 +1,12 @@
+model_class: BCI
+
 projector:
   stacking: 1      
   inter_size: 2048
   bias: true
   from_pt: null
+  act: relu
 
 ndt1:  include:configs/ndt1.yaml
 
-load_ndt1_from_pt: null
+

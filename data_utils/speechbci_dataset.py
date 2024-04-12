@@ -10,13 +10,14 @@ import scipy
 import numpy as np
 from g2p_en import G2p
 
+from transformers import PreTrainedTokenizer
 
 """ Load competition data from ".mat" format.
 INPUTS
     data_dir: directory to load the data from
     day_idxs: list of day indexes to keep
-    zscore: wether to zscore the data by blocks
-    splits: name of the split subfolders
+    zscore_block: wether to zscore the data by blocks
+    zscore_day: wether to zscore the data by blocks
     features: name of the features to extract
     area_start: start index to extract features from a given area
     area_end: end index to extract features from a given area
@@ -30,23 +31,27 @@ OUTPUTS
         day: day in which the data from the example was taken
         block_idx: normalized index for block
         day_idx: normalized index for day
+        day_mean: mean across each channel for each day
+        day_std: std across each channel for each day
     }
 """
 def load_competition_data(
-    data_dir:   str, 
-    day_idxs:  Optional[List[int]] = None,
-    zscore:     Optional[bool]      = False, 
-    splits:     Optional[List[str]] = ["train","test","competitionHoldOut"], 
-    features:   Optional[List[str]] = ["tx1","spikePow"], 
-    area_start: Optional[int]       = 0, 
-    area_end:   Optional[int]       = 128,
+    data_dir:       str, 
+    day_idxs:       Optional[List[int]] = None,
+    zscore_block:   Optional[bool]      = False, 
+    zscore_day:     Optional[bool]      = False,
+    features:       Optional[List[str]] = ["tx1","spikePow"], 
+    area_start:     Optional[int]       = 0, 
+    area_end:       Optional[int]       = 128,
     **kwargs,
 ) -> Dict[str,List[Dict[str,Any]]]:
+
+    punctuation = string.punctuation.replace("'","")
 
     """ Extract neural data from files into dict. Returns the spikes data, the day and the
     block of the experiment, and the target sentence.
     """
-    def get_split_dict(split_dir, zscore, features, area_start, area_end):
+    def get_split_dict(split_dir, zscore_block, features, area_start, area_end):
         all_files = glob(os.path.join(split_dir,"*"))
         x = []
         y = []
@@ -58,7 +63,7 @@ def load_competition_data(
             y_i = data["sentenceText"]
             b_i = data["blockIdx"]
             d_i = [tuple(file.split("/")[-1].split(".")[1:4])] * len(b_i)
-            if zscore:
+            if zscore_block:
                 # Compute mean and std for each neuron across all experiments in the same block
                 blocks = set([block for [block] in b_i.tolist()])
                 for block in blocks:
@@ -76,17 +81,18 @@ def load_competition_data(
         b = (np.concatenate(b).squeeze() - 1).tolist()    # translate to start at 0
         return [{
             "spikes":  x_i.astype(np.float32),   
-            "sentence": y_i,
+            "sentence": y_i.translate(str.maketrans("","",punctuation)).lower().strip(),
             "block": b_i,
             "day": d_i,
         }  for x_i, y_i, b_i, d_i in zip(x,y,b,d)]
     
     # Get dict for each split
     dataset_dict = {}
+    splits = ["train","test","competitionHoldOut"]
     for split in splits:
         dir = os.path.join(data_dir, split)
         print(f"Loading {split} data form {dir}")
-        dict = get_split_dict(dir, zscore, features, area_start, area_end)
+        dict = get_split_dict(dir, zscore_block, features, area_start, area_end)
         dataset_dict[split] = dict
 
     # Index the days and the blocks
@@ -107,6 +113,13 @@ def load_competition_data(
                 keep_idx.append(i)
         # keep only the selected sessions by day_idx
         dataset_dict[split] = [dataset_dict[split][i] for i in keep_idx]
+
+    if zscore_day:
+        spikes_by_day = {i: np.concatenate([row["spikes"] for row in dataset_dict["train"] if int(row["day_idx"]) == i],axis=0) for i in day_idxs}
+        for split in splits:
+            for i, row in enumerate(dataset_dict[split]):
+                dataset_dict[split][i]["spikes"] = (dataset_dict[split][i]["spikes"] - np.mean(spikes_by_day[int(row["day_idx"])],axis=0)) / np.std(spikes_by_day[int(row["day_idx"])],axis=0)
+
     return dataset_dict
 
 
@@ -142,13 +155,49 @@ def create_phonemes_ctc_labels(
         return [vocab.index(pp) for pp in p]
 
     # Normalization of sentences
-    punctuation = string.punctuation.replace("'","")
     for split in dataset:
         for i, row in enumerate(dataset[split]):
-            phonemes = s_to_p(row["sentence"].translate(str.maketrans("","",punctuation)).lower().strip())
+            phonemes = s_to_p(row["sentence"])
             dataset[split][i]["phonemes"] = phonemes
             dataset[split][i]["phonemes_idx"] = np.asarray(p_to_i(phonemes))
 
     return dataset
 
+
+""" Create fields ``input_ids``, ``attention_mask``, ``input_split`` and ``labels`` for LLM training. This method 
+does not create a copy and modifies the passed dataset.
+INPUTS
+    dataset: dict with split keys. Each split is a list of examples. Each example is a dict.
+    tokenizer_path: path to tokenizer used to create text tokens
+    prompt: text where spike embeddings will be introduced and sentence concatenated
+OUTPUTS
+    dataset: input dataset with added an added keys {
+        input_ids: token ids corresponding to the prompt with sentence
+        attention_mask: mask to indicate which tokens are padding and should not be attended to
+        input_split: indicates where to split the input_ids to introduce the spikes
+        labels: indicates which tokens are the sentence and thus should be decoded
+    }
+"""
+def create_llm_labels(
+    dataset:    Dict[str,List[Dict[str,Any]]], 
+    tokenizer:  PreTrainedTokenizer,
+    prompt:     Optional[str] = "neural activity:#-> sentence:"
+) -> Dict[str,List[Dict[str,Any]]]:
+
+    prompt_tokens_a = tokenizer(prompt.split("#")[0], return_tensors="np")["input_ids"][0]
+    prompt_tokens_b = tokenizer(prompt.split("#")[1], return_tensors="np")["input_ids"][0]
+
+    for split in dataset:
+        for i, row in enumerate(dataset[split]):
+            dataset[split][i]["input_ids"] = np.concatenate(
+                (prompt_tokens_a, prompt_tokens_b, tokenizer(row["sentence"], return_tensors="np")["input_ids"][0]),
+                axis=0,
+            )
+            dataset[split][i]["attention_mask"] = np.ones_like(dataset[split][i]["input_ids"])
+            dataset[split][i]["input_split"] = np.atleast_1d(prompt_tokens_a.shape[0])
+            dataset[split][i]["labels"] = np.concatenate(
+                (np.ones_like(prompt_tokens_a)*(-100), np.ones_like(prompt_tokens_b)*(-100), tokenizer(row["sentence"], return_tensors="np")["input_ids"][0]),
+                axis=0,
+            )
+    return dataset
 

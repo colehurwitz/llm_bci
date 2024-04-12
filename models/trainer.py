@@ -25,6 +25,7 @@ from data_utils.datasets import SpikingDataset, SpikingDatasetForDecoding, pad_c
 from models.patchtst import PatchTSTForSpikingActivity
 from models.itransformer import iTransformer
 from models.ndt1 import NDT1
+from models.bci import BCI
 
 """ Mapping from dataset class names to dataset class. New dataset classes should be registered here
 """
@@ -32,7 +33,7 @@ NAME2DATASET = {"base": SpikingDataset, "decoding": SpikingDatasetForDecoding}
 
 """ Mapping from model class names to model class. New model classes should be registered here
 """
-NAME2MODEL = {"PatchTST": PatchTSTForSpikingActivity, "NDT1": NDT1, "iTransformer": iTransformer}
+NAME2MODEL = {"PatchTST": PatchTSTForSpikingActivity, "NDT1": NDT1, "iTransformer": iTransformer, "BCI": BCI}
 
 """ Base configuration for the Trainer. 
 """
@@ -53,6 +54,7 @@ def default_trainer_config():
         functions receive as input the model, model inputs, unused inputs and model outputs, and should
         return a ``torch.Tensor`` which will be averaged across all devices.
         eval_metric_fns: ``dict`` of additional functions to be used during evaluation
+        extra_model_kwargs: ``dict`` of additional kwargs passed to model
 """
 class Trainer():
 
@@ -63,6 +65,7 @@ class Trainer():
         dataset:            Optional[Union[str,Dict[str,List[Dict[str,Any]]]]]   = None,
         metric_fns:         Optional[Dict[str,Callable]]    = None,
         eval_metric_fns:    Optional[Dict[str,Callable]]    = None,
+        extra_model_kwargs: Optional[Dict[str,Any]]         = None,
     ):  
         self.config = update_config(default_trainer_config(), config) 
         
@@ -80,7 +83,7 @@ class Trainer():
 
         self.prepare_logging()
 
-        self.set_model(model)
+        self.set_model(model, extra_model_kwargs)
         self.get_model_inputs()     # Used by the dataloader to provide only the keys used by the model
 
         self.set_dataset(dataset)
@@ -138,17 +141,20 @@ class Trainer():
         INPUTS
             model: Can be a nn.Module. If it is None, it will be loaded from the configuration.
     """
-    def set_model(self, model):
+    def set_model(self, model, extra_model_kwargs=None):
+        if extra_model_kwargs is None:
+            extra_model_kwargs = {}
         if model is None:
             # Load model from configuration
             model_class = NAME2MODEL[self.config.model.model_class]    # Get class from name
-            self.model = model_class(self.config.model, **self.config.method.model_kwargs)
+            self.model = model_class(self.config.model, **self.config.method.model_kwargs, **extra_model_kwargs)
         else:
             self.model = model
 
         self.print_v(self.model)
         self.print_v(f"Model number of trainable parameters: {sum(p.numel() for p in self.model.parameters() if p.requires_grad):,}", verbosity=0)
-            
+        if getattr(self.model, "llm", None) is not None and self.accelerator.is_main_process and 0 >= self.verbosity:
+            self.model.llm.print_trainable_parameters()
 
     """ Get the used columns of the dataset
     """

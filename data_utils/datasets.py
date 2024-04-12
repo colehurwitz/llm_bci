@@ -80,8 +80,8 @@ class SpikingDatasetForDecoding(SpikingDataset):
         _ = [inputs.pop(k) for k in [f"{self.spikes_name}", f"{self.targets_name}"]]
         
         # Add new columns
-        targets = self.dataset[idx][f"{self.targets_name}"].astype(np.float32)
-        spikes = self.dataset[idx][f"{self.spikes_name}"].astype(np.float32)
+        targets = self.dataset[idx][f"{self.targets_name}"]
+        spikes = self.dataset[idx][f"{self.spikes_name}"]
         inputs.update({
             "spikes": spikes,                                           # (seq_len, num_channels)
             "spikes_mask": np.ones(spikes.shape[0], dtype=np.int64),    # (seq_len)

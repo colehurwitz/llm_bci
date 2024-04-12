@@ -30,11 +30,35 @@ import models.ndt1
 import models.itransformer
 from models.trainer import Trainer, default_trainer_config
 
+
+rl(utils)
+rl(utils.eval_utils)
+from utils.eval_utils import *
+
+rl(data_utils)
+rl(data_utils.datasets)
+rl(data_utils.speechbci_dataset)
+rl(data_utils.ibl_dataset)
+from data_utils.speechbci_dataset import *
+from data_utils.ibl_dataset import *
+from data_utils.datasets import *
+
+rl(models)
+rl(models.trainer)
+rl(models.patchtst)
+rl(models.itransformer)
+rl(models.ndt1)
+from models.patchtst import *
+from models.ndt1 import *
+from models.itransformer import *
+from models.trainer import Trainer
+
+
 def probe(model, model_inputs, unused_inputs, outputs, **kwargs):
     a = {k: v.detach().cpu() if isinstance(v, torch.Tensor) else v for k,v in model_inputs.items()}
     b = {k: v.detach().cpu() if isinstance(v, torch.Tensor) else v for k,v in unused_inputs.items()}
     c = {k: v.detach().cpu() if isinstance(v, torch.Tensor) else v for k,v in outputs.items() if v is not None}
-    all.append({"inputs": a, "unused": b, "outputs": c})
+    all_batch.append({"inputs": a, "unused": b, "outputs": c})
     return torch.tensor(0.0)
 
 
@@ -61,17 +85,30 @@ config_file = "configs/trainer_ctc_ndt1.yaml"
 config = update_config(default_trainer_config(), config_file)
 config = update_config(config, config_from_kwargs(kwargs))
 
+
+rl(data_utils)
+rl(data_utils.datasets)
+rl(data_utils.speechbci_dataset)
+rl(data_utils.ibl_dataset)
+from data_utils.speechbci_dataset import *
+from data_utils.ibl_dataset import *
+from data_utils.datasets import *
+
+
 # Load dataset
 if config.data.data_load == "file":
     dataset = torch.load(os.path.join(config.data.data_dir, config.data.data_file))
 elif config.data.data_load == "ibl":
-    dataset = load_ibl_dataset(config.data.data_dir, config.data.eid, config.data.static_behaviours, config.data.dynamic_behaviours, config.data.norm_behaviours)
+    dataset = load_ibl_dataset(**config.data)
 elif config.data.data_load == "speechbci":
     dataset = load_competition_data(**config.data)
     if "vocab_file" in config["data"] and config.data.vocab_file is not None:
         blank_id = config.method.model_kwargs.blank_id
         vocab = json.load(open(config.data.vocab_file,"r"))
         dataset = create_phonemes_ctc_labels(dataset, config.data.vocab_file)
+    if "tokenizer_path" in config["data"] and config.data.tokenizer_path is not None:
+        dataset = create_llm_labels(dataset, config.data.tokenizer_path, config.data.prompt)
+
 
 
 # Adjust lablels for static behaviour decoding
@@ -133,36 +170,13 @@ elif config.model.model_class == "NDT1":
 
 # print(yaml.dump(dict(config), allow_unicode=True, default_flow_style=False))
 
-rl(utils)
-rl(utils.eval_utils)
-from utils.eval_utils import *
-
-rl(data_utils)
-rl(data_utils.datasets)
-rl(data_utils.speechbci_dataset)
-rl(data_utils.ibl_dataset)
-from data_utils.speechbci_dataset import *
-from data_utils.ibl_dataset import *
-from data_utils.datasets import *
-
-rl(models)
-rl(models.trainer)
-rl(models.patchtst)
-rl(models.itransformer)
-rl(models.ndt1)
-from models.patchtst import *
-from models.ndt1 import *
-from models.itransformer import *
-from models.trainer import Trainer
-
 
 trainer = Trainer(config, dataset=dataset, metric_fns={"A": probe, "CER": cer})#, "WER": wer})
-all = []
+all_batch = []
 trainer.evaluate(eval_train_set=False)
 trainer.train()
 
 
-# from_pt = "pt_checkpoints/itransformer-671c7ea7-mlm-bs-16-nl_5-hs_1024-d_0.1-mask_timestep_0.1/STEP45000"
 # config["model"]["encoder"]["from_pt"] = from_pt
 # config["model"]["decoder"]["from_pt"] = from_pt
 # config["savestring"] = "mlm_ndt_poisson"
@@ -175,8 +189,10 @@ trainer.train()
 # config["model"]["masker"]["mode"] = "full"
 # config["model"]["masker"]["mode"] = "full"
 
-# config = DictConfig(torch.load(os.path.join(from_pt, "trainer_config.pth")))
-# trainer.model.load_checkpoint(from_pt)
+
+from_pt = "pt_checkpoints/ndt1-ctc-opt_64_1.e-3_5.e-5-nl_5-hs_1024-is_1024-d_0.4_0.2-noise_true-context_false_false_false/STEP12200"
+config = DictConfig(torch.load(os.path.join(from_pt, "trainer_config.pth")))
+trainer.model.load_checkpoint(from_pt)
 
 
 
@@ -193,7 +209,7 @@ else:
 all_preds = []
 all_targets = []
 all_stat_behv = {k: [] for k in static_behaviours}
-for b in all:
+for b in all_batch:
     inputs = b["inputs"]
     unused = b["unused"]
     outputs = b["outputs"]

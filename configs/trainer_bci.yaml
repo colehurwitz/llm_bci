@@ -8,21 +8,21 @@ verbosity: 0
 
 # Logging directories
 dirs:
-  checkpoint_dir: /home/gridsan/dbeneto/TFG/BCI/pt_checkpoints  # save model state dicts (todo optimizer states)
-  log_dir: /home/gridsan/dbeneto/TFG/BCI/pt_logs  # save tensorboard logs
+  checkpoint_dir: /home/gridsan/dbeneto/TFG/BCI/bci_checkpoints  # save model state dicts (todo optimizer states)
+  log_dir: /home/gridsan/dbeneto/TFG/BCI/bci_logs  # save tensorboard logs
 
 
 # Training configuration
 training:
   num_epochs: 100
-  train_batch_size: 64
-  test_batch_size: 128      
+  train_batch_size: 2
+  test_batch_size: 2      
   shuffle_test_dataloader: false    # Shuffle test dataloader between epochs
   drop_last_test_dataloader: true   # Drop last batch to ensure same batch size
-  save_every: 100  # Save checkpoint
-  eval_every: 100  # Eval model
+  save_every: 500  # Save checkpoint
+  eval_every: 500  # Eval model
 
-model: include:configs/ndt1.yaml
+model: include:configs/bci.yaml
 
 data:
   dataset_class: decoding
@@ -37,20 +37,33 @@ data:
 
   data_load: speechbci
   data_dir: /home/gridsan/dbeneto/MAML-Soljacic_shared/BCI/data/competitionData
-  zscore_block: True
-  zscore_day: True
-  vocab_file: vocab.json
+  zscore: True
   date_idxs: null
+  tokenizer_path: /home/gridsan/dbeneto/MAML-Soljacic_shared/llama2/tokenizer
+  prompt: "neural activity:#-> sentence:"
 
 method:
 
   model_kwargs:
-    method_name: ctc   
+    method_name: endtoend
+
+    load_ndt1_from_pt: "pt_checkpoints/ndt1-ctc-opt_64_1.e-3_5.e-5-nl_5-hs_1024-is_1024-d_0.4_0.2-noise_true-context_false_false_false/STEP12200"
+    llm_path: /home/gridsan/dbeneto/MAML-Soljacic_shared/llama2/7b
+    lora:
+      r: 8
+      alpha: 32
+      dropout: 0.2
+      target_modules: ["q_proj","v_proj","k_proj","o_proj","gate_proj","up_proj","down_proj"]
+      modules_to_save: ["embed_tokens"]
+    freeze_llm: false
+
     vocab_size: 41
     blank_id: 0
     zero_infinity: true
+
+
   dataset_kwargs:
-    targets_name: phonemes_idx
+    targets_name: labels
 
   dataloader_kwargs:
     pad_dict:
@@ -75,7 +88,7 @@ method:
       targets:
         dim: 0
         side: right
-        value: 0
+        value: -100
         truncate: null
         min_length: null
       targets_mask:
@@ -84,16 +97,29 @@ method:
         value: 0
         truncate: null
         min_length: null
+      input_ids:
+        dim: 0
+        side: right
+        value: 0
+        truncate: null
+        min_length: null
+      attention_mask:
+        dim: 0
+        side: right
+        value: 0
+        truncate: null
+        min_length: null
+
 
   metric_kwargs:
     n_print: 1
 
 optimizer:
   gradient_accumulation_steps: 1
-  lr: 1.e-3
+  lr: 1.e-4
   wd: 5.e-5
   eps: 1.e-8
   warmup_pct: 0.0 # cosine/linear
   gamma: 0.95     # step
   div_factor: 25  # cosine
-  scheduler: cosine # step/cosine/linear
+  scheduler: step # step/cosine/linear

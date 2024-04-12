@@ -2,17 +2,18 @@ import os
 import math
 import yaml
 from dataclasses import dataclass
-from typing import Optional
+from typing import Optional, List, Dict
 
 import torch
 import torch.nn as nn
 
-from transformers import PreTrainedModel, LlamaConfig
+from peft import LoraConfig, get_peft_model
+from transformers import AutoModelForCausalLM, LlamaConfig
 from transformers.activations import ACT2FN
 ACT2FN["softsign"] = nn.Softsign
 
 from models.ndt1 import NDT1
-from models.trainer import ModelOutput
+from models.model_output import ModelOutput
 
 from utils.config_utils import DictConfig, update_config
 
@@ -32,23 +33,48 @@ class BCI(nn.Module):
     def __init__(
         self,
         config: DictConfig, 
-        llm: PreTrainedModel,
+        llm_path: str,
+        lora: Optional[Dict] = None,
+        freeze_llm: Optional[bool] = False,
+        **kwargs,
     ):
 
         super().__init__()
 
         config = update_config(DEFAULT_CONFIG, config)
         
+        if "llm" in kwargs:
+            llm = kwargs["llm"]
+        else:
+            if "debug" in kwargs and kwargs["debug"]:
+                llm_config = LlamaConfig(num_hidden_layers=2, hidden_size=32, intermediate_size=32,  num_attention_heads=4)
+                llm = AutoModelForCausalLM.from_config(llm_config)
+            else:
+                llm = AutoModelForCausalLM.from_pretrained(llm_path) 
+
+            if lora is not None:
+                lora = DictConfig(lora)
+                peft_config = LoraConfig(
+                    inference_mode=False, r=lora.r, lora_alpha=lora.alpha, lora_dropout=lora.dropout,
+                    target_modules=lora.target_modules, modules_to_save=lora.modules_to_save,
+                )
+                llm = get_peft_model(llm, peft_config)
+
+            if freeze_llm:
+                for param in llm.parameters():
+                    param.requires_grad = False
+
+
         # Set LLM
         self.llm = llm
         self.llm_config = llm.config
 
         # Build encoder
-        ndt1_pt_path = config["load_ndt1_from_pt"]
+        ndt1_pt_path = kwargs.pop("load_ndt1_from_pt", None)
         if ndt1_pt_path is not None:
             config["ndt1"]["encoder"]["from_pt"] = ndt1_pt_path
             config["ndt1"]["decoder"]["from_pt"] = ndt1_pt_path
-        self.ndt1 = NDT1(config.ndt1)
+        self.ndt1 = NDT1(config.ndt1, **kwargs)
 
 
         # Build projector
@@ -87,56 +113,61 @@ class BCI(nn.Module):
             spikes_lengths:     torch.LongTensor,   # (bs)
             block_idx:          Optional[torch.LongTensor]  = None,     # (bs)
             day_idx:            Optional[torch.LongTensor]  = None,     # (bs)
-            labels:             Optional[torch.LongTensor]  = None,     # (bs, seq_len)
+            targets:             Optional[torch.LongTensor]  = None,     # (bs, seq_len)
     ) -> torch.FloatTensor:                     # (batch, seq_len, hidden_size)
         
+        torch.save([input_ids, attention_mask, input_split, spikes, spikes_mask, targets], "a.pth")
+
         # Embed tokens of sentence
         text_embeds = (self.llm.get_input_embeddings())(input_ids)    # (batch, seq_len, hidden_size)
         
-        spikes_embeds, _ = self.encoder(spikes, spikes_mask, spikes_timestamp, block_idx, date_idx) # (batch_size, seq_len_spikes, hidden_size)
+        spikes_embeds, spikes_mask, _ = self.ndt1.encoder(spikes, spikes_mask, spikes_timestamp, block_idx, day_idx) # (batch_size, seq_len_spikes, hidden_size)
 
         B, T, H = spikes_embeds.size()
-         
+
         # Pad to be evenly stacked
         if T % self.stacking != 0:
             new_T = math.ceil(T / self.stacking) * self.stacking
-            spikes_embeds = torch.cat((torch.zeros(B, new_T - T, H).to(spikes_embeds), spikes_embeds), 1)
-            spikes_mask = torch.cat((torch.zeros(B, new_T - T).to(spikes_mask), spikes_mask), 1)
+            spikes_embeds = torch.cat((spikes_embeds, torch.zeros(B, new_T - T, H).to(spikes_embeds)), 1)
+            spikes_mask = torch.cat((spikes_mask, torch.zeros(B, new_T - T).to(spikes_mask)), 1)
             T = new_T
+
 
         # Stack and project
         spikes_embeds = spikes_embeds.view(B,T//self.stacking,H*self.stacking)
-        spikes_embeds = self.stack_projector(spikes_embeds)
+        spikes_embeds = self.projector(spikes_embeds)
         spikes_mask = spikes_mask.view(B, T//self.stacking, self.stacking)
         spikes_mask = (spikes_mask.sum(-1) == self.stacking).to(attention_mask) # only keep new features that contain no padding
 
         input_embeds = torch.stack([
             torch.cat(
                 (
-                    t[:s], e, t[s:]
+                    t[:d], s, t[d:]
                 ), dim=0
             )
-        for t,e,s in zip(text_embeds, spikes_embeds, input_split)], dim=0)
+        for t,s,d in zip(text_embeds, spikes_embeds, input_split)], dim=0)
 
         attention_mask = torch.stack([
             torch.cat(
                 (
-                    t[:s], e, t[s:]
+                    a[:d], s, a[d:]
                 ), dim=0
             )
-        for t,e,s in zip(attention_mask, spikes_mask, input_split)], dim=0)
+        for a,s,d in zip(attention_mask, spikes_mask, input_split)], dim=0)
 
-        if labels is not None:
-            labels = torch.stack([
+        if targets is not None:
+            targets = torch.stack([
             torch.cat(
                 (
-                    l[:s], torch.ones_like(e).to(l)*(-100), l[s:]
+                    t[:d], torch.ones_like(s).to(t)*(-100), t[d:]
                 ), dim=0
             )
-        for l,e,s in zip(labels, spikes_embeds, input_split)], dim=0)
+        for t,s,d in zip(targets, spikes_mask, input_split)], dim=0)
 
 
-        return input_embeds, attention_mask, labels   
+        
+        torch.save([input_embeds, attention_mask, spikes_mask, targets], "b.pth")
+        return input_embeds, attention_mask, targets   
         # (batch_size, tot_seq_len, hidden_size), (batch_size, tot_seq_len), (batch_size, tot_seq_len)
 
 
@@ -145,47 +176,47 @@ class BCI(nn.Module):
         self,
         input_ids:          torch.LongTensor,                   # (batch_size, seq_len)
         attention_mask:     torch.LongTensor,                   # (batch_size, seq_len)
-        inputt_split:       torch.LongTensor,                   # (bs)
-        spikes:             torch.FloatTensor,                  # (batch_size, fea_len, n_channels)
-        spikes_mask:        torch.LongTensor,                   # (batch_size, fea_len)
-        spikes_timestamp:   torch.LongTensor,                   # (batch_size, fea_len)
+        input_split:       torch.LongTensor,                    # (bs)
+        spikes:             torch.FloatTensor,                  # (batch_size, seq_len_spikes, n_channels)
+        spikes_mask:        torch.LongTensor,                   # (batch_size, seq_len_spikes)
+        spikes_timestamp:   torch.LongTensor,                   # (batch_size, seq_len_spikes)
         spikes_lengths:     torch.LongTensor,                   # (bs)
         block_idx:          Optional[torch.LongTensor] = None,  # (batch_size)
-        date_idx:           Optional[torch.LongTensor] = None,  # (batch_size)
-        labels:             Optional[torch.LongTensor] = None,  # (batch_size, seq_len)
+        day_idx:           Optional[torch.LongTensor] = None,  # (batch_size)
+        targets:             Optional[torch.LongTensor] = None,  # (batch_size, seq_len)
     ) -> BCIOutput:
 
-        
-        inputs_embeds, attention_mask, labels = self.prepare_embeds(input_ids, attention_mask, input_split, 
-                                        spikes_mask, spikes_timestamp, spikes_lengths, block_idx, day_idx, labels)
+        inputs_embeds, attention_mask, targets = self.prepare_embeds(input_ids, attention_mask, input_split, spikes,
+                                        spikes_mask, spikes_timestamp, spikes_lengths, block_idx, day_idx, targets)
         
         # Forward decoder
-        logits = self.decoder(  
+        logits = self.llm(  
             inputs_embeds=inputs_embeds,
             attention_mask=attention_mask,
-        )   # (batch_size, tot_seq_len, vocab_size)
+            return_dict=True,
+        ).logits   # (batch_size, tot_seq_len, vocab_size)
         
 
         loss = None
         n_examples = None
-        if labels is not None:
+        if targets is not None:
             # Shift so that tokens < n predict n
             shift_logits = logits[..., :-1, :].contiguous()
-            shift_labels = labels[..., 1:].contiguous()
+            shift_targets = targets[..., 1:].contiguous()
             # Flatten the tokens
             shift_logits = shift_logits.view(-1, self.llm_config.vocab_size)
-            shift_labels = shift_labels.view(-1)
+            shift_targets = shift_targets.view(-1)
             # Enable model parallelism
-            shift_labels = shift_labels.to(shift_logits.device)
-            loss = self.loss_fn(shift_logits, shift_labels)
+            shift_targets = shift_targets.to(shift_logits.device)
+            loss = self.loss_fn(shift_logits, shift_targets)
 
-            n_examples=(shift_labels != -100).sum()
+            n_examples=(shift_targets != -100).sum()
         
         return BCIOutput(
             loss=loss,
             n_examples=n_examples,
             preds=logits,
-            targets=labels,
+            targets=targets,
         )
     
 
@@ -196,20 +227,20 @@ class BCI(nn.Module):
         input_ids:          torch.LongTensor,                   # (batch_size, seq_len)
         attention_mask:     torch.LongTensor,                   # (batch_size, seq_len)
         inputt_split:       torch.LongTensor,                   # (bs)
-        spikes:             torch.FloatTensor,                  # (batch_size, fea_len, n_channels)
-        spikes_mask:        torch.LongTensor,                   # (batch_size, fea_len)
-        spikes_timestamp:   torch.LongTensor,                   # (batch_size, fea_len)
+        spikes:             torch.FloatTensor,                  # (batch_size, seq_len_spikes, n_channels)
+        spikes_mask:        torch.LongTensor,                   # (batch_size, seq_len_spikes)
+        spikes_timestamp:   torch.LongTensor,                   # (batch_size, seq_len_spikes)
         spikes_lengths:     torch.LongTensor,                   # (bs)
         block_idx:          Optional[torch.LongTensor]  = None, # (batch_size)
-        date_idx:           Optional[torch.LongTensor]  = None, # (batch_size)
+        day_idx:           Optional[torch.LongTensor]  = None,  # (batch_size)
         inputs_embeds:      Optional[torch.FloatTensor] = None, # (batch, seq_len, hidden_size)
         **gen_config:       DictConfig,
     ) -> List[torch.LongTensor]:  
          
         # Embed logits and merge with text embeddings
         if inputs_embeds is None:
-            inputs_embeds, attention_mask, _ = self.prepare_embeds(input_ids, attention_mask, input_split, 
-                                        spikes_mask, spikes_timestamp, spikes_lengths, block_idx, day_idx, labels=None)
+            inputs_embeds, attention_mask, _ = self.prepare_embeds(input_ids, attention_mask, input_split, spikes,
+                                        spikes_mask, spikes_timestamp, spikes_lengths, block_idx, day_idx, targets=None)
         
         # LLM built-in generation
         return self.llm.generate(inputs_embeds=inputs_embeds, attention_mask=attention_mask, **gen_config)

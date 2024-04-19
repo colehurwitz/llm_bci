@@ -23,12 +23,10 @@ encoder:
     forward: -2         # -1 for masking self, -2 for full
     backward: -2        # -1 for masking self, -2 for full
 
-  # Normalize and add noise
-  norm_and_noise:
-    active: true
-    smooth_sd: 2                # gaussian smoohing  
-    norm: null                  # which normalization layer to use (null/layernorm/zscore)
-    eps: 1.e-7                  # avoid dividing by zero when normalizing padded spikes     
+  # Smooth spikes and add noise
+  smooth_and_noise:
+    noise: true
+    smooth_sd: 2               # gaussian smoohing, null to not smooth
     white_noise_sd: 1.0        # 1.0 gaussian noise added to the inputs  1.0 originally
     constant_offset_sd: 0.2    # 0.2 gaussian noise added to the inputs but contsnat in the time dimension 0.2 originally
     
@@ -40,7 +38,7 @@ encoder:
     n_days: 24            # number of days of experiments
     max_F: 1024           # max spikes sequence len in timesteps
 
-    input_dim: 512        # embedding size of each tiemstep before stacking
+    input_dim: 256        # embedding size of each tiemstep before stacking
     adapt: false          # adapt the embedding layer for each day
     day_token: false      # add day token embedding at the beginning
     block_token: false    # add block token embedding at the beginning

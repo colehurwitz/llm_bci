@@ -30,6 +30,7 @@ class Masker(nn.Module):
     def __init__(self, config: DictConfig):
         super().__init__()
 
+        self.force_active = config.force_active if "force_active" in config else False
         self.active = config.active
         self.mode = config.mode          
         self.ratio = config.ratio
@@ -46,7 +47,7 @@ class Masker(nn.Module):
         brain_regions: Optional[np.ndarray] = None,     # (bs, n_channels)     
     ) -> Tuple[torch.FloatTensor,torch.LongTensor]:     # (bs, seq_len, n_channels), (bs, seq_len, n_channels)
 
-        if not self.active or not self.training:
+        if not self.active or (not self.training and not self.force_active):
             return spikes, torch.zeros_like(spikes, dtype=torch.int64)
 
         mask_ratio = self.ratio

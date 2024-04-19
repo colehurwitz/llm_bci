@@ -19,6 +19,7 @@ training:
   test_batch_size: 16   
   shuffle_test_dataloader: false    # Shuffle test dataloader between epochs
   drop_last_test_dataloader: true   # Drop last batch of test dataloader to ensure same batch size
+  drop_last_train_dataloader: true   # Drop last batch to ensure same batch size
 
   save_every: 100 # Save checkpoint
   eval_every: 100  # Eval model

@@ -14,11 +14,12 @@ dirs:
 
 # Training configuration
 training:
-  num_epochs: 100
-  train_batch_size: 64
-  test_batch_size: 128      
+  num_epochs: 75
+  train_batch_size: 1
+  test_batch_size: 1      
   shuffle_test_dataloader: false    # Shuffle test dataloader between epochs
-  drop_last_test_dataloader: true   # Drop last batch to ensure same batch size
+  drop_last_test_dataloader: false   # Drop last batch to ensure same batch size
+  drop_last_train_dataloader: false   # Drop last batch to ensure same batch size
   save_every: 100  # Save checkpoint
   eval_every: 100  # Eval model
 
@@ -49,8 +50,10 @@ method:
     vocab_size: 41
     blank_id: 0
     zero_infinity: true
+  
   dataset_kwargs:
     targets_name: phonemes_idx
+    batch_size: 1
 
   dataloader_kwargs:
     pad_dict:

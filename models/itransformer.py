@@ -9,7 +9,7 @@ from torchvision.ops import MLP
 import numpy as np
 
 from transformers.activations import ACT2FN
-ACT2FN["softsign"] = nn.Softsign()
+ACT2FN["softsign"] = nn.Softsign
 
 from utils.config_utils import DictConfig, update_config
 from models.model_output import ModelOutput
@@ -114,7 +114,7 @@ class iTransformerEncoder(nn.Module):
                     bias=config.bias,
                     dropout=config.embedder.dropout,
                 ),
-                nn.LayerNorm(config.hidden_size),
+                nn.LayerNorm(config.hidden_size), # MAJOR CHANGE HERE
             )
         elif self.mode == "transformer":
             self.embed = UnivariateTransformer(config.embedder)
@@ -235,7 +235,7 @@ class iTransformer(nn.Module):
 
         
         # Build masker
-        self.masker = nn.ModuleList([Masker(DictConfig(m_config)) for m_config in config.masker.values()])
+        self.masker = nn.ModuleDict({k: Masker(DictConfig(m_config)) for k, m_config in config.masker.items()})
         
         # Build encoder
         self.encoder = iTransformerEncoder(config.encoder, config.decoder.use_cls)
@@ -329,7 +329,7 @@ class iTransformer(nn.Module):
         
         # Encode neural data. x is the masked embedded spikes. targets_mask is True for masked bins
         targets_mask = torch.zeros_like(spikes, dtype=torch.int64)
-        for masker in self.masker:
+        for masker in self.masker.values():
             spikes, new_mask = masker(spikes)
             targets_mask = targets_mask | new_mask
 
@@ -410,3 +410,4 @@ class iTransformer(nn.Module):
     def load_checkpoint(self, load_dir):
         self.encoder.load_state_dict(torch.load(os.path.join(load_dir,"encoder.bin")))
         self.decoder.load_state_dict(torch.load(os.path.join(load_dir,"decoder.bin")))
+

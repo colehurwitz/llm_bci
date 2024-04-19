@@ -74,22 +74,12 @@ def apply_rotary_pos_emb(q, k, pos_ids, cos, sin, unsqueeze_dim=1):
 
         
 
-# Normalize and add noise
-class NormAndNoise(nn.Module): 
+# Smooth spikes and add noise
+class SmoothAndNoise(nn.Module): 
 
-    def __init__(self, input_size, config):
+    def __init__(self, config):
         super().__init__()
-        self.active = config.active
-
-        self.normalize = config.norm is not None
-        if self.normalize:
-            if config.norm == "layernorm":
-                self.norm = nn.LayerNorm(input_size)
-            elif config.norm == "zscore":
-                self.norm = None
-            else:
-                raise Exception(f"Norm layer {config.norm} not implemented")
-        self.eps = config.eps
+        self.noise = config.noise
         self.white_noise_sd = config.white_noise_sd
         self.constant_offset_sd = config.constant_offset_sd
         self.smooth = config.smooth_sd is not None
@@ -100,26 +90,18 @@ class NormAndNoise(nn.Module):
     
 
     def forward(self, spikes):
-        if not self.active:
-            return spikes
             
         B, T, N = spikes.size()
 
         if self.smooth:
             spikes = F.conv1d(spikes.transpose(-1,-2),self.kernel.unsqueeze(0).unsqueeze(0).expand(N,1,self.kernel.size(0)).to(spikes.dtype), padding="same", groups=N).transpose(-1,-2)
-        
 
-        if self.normalize:  
-            if self.norm is None:
-                spikes = (spikes - spikes.mean(-1).unsqueeze(-1)) / (spikes.std(-1).unsqueeze(-1) + self.eps)
-            else:
-                spikes = self.norm(spikes)
+        if self.noise and self.training:
+            if self.white_noise_sd is not None:
+                spikes += self.white_noise_sd*torch.randn(B,T,N, dtype=spikes.dtype, device=spikes.device)
 
-        if self.white_noise_sd is not None and self.training:
-            spikes += self.white_noise_sd*torch.randn(B,T,N, dtype=spikes.dtype, device=spikes.device)
-
-        if self.constant_offset_sd is not None and self.training:
-            spikes += self.constant_offset_sd*torch.randn(B,1,N, dtype=spikes.dtype, device=spikes.device)
+            if self.constant_offset_sd is not None:
+                spikes += self.constant_offset_sd*torch.randn(B,1,N, dtype=spikes.dtype, device=spikes.device)
 
         
         return spikes
@@ -410,7 +392,7 @@ class NeuralEncoder(nn.Module):
         self.register_buffer("context_mask", context_mask, persistent=False)
 
         # Normalization and noising layer
-        self.norm_and_noise = NormAndNoise(config.embedder.n_channels, config.norm_and_noise)
+        self.smooth_and_noise = SmoothAndNoise(config.smooth_and_noise)
 
         # Embedding layer
         self.embedder = NeuralEmbeddingLayer(self.hidden_size, config.embedder)
@@ -436,7 +418,7 @@ class NeuralEncoder(nn.Module):
         B, T, N = spikes.size() # batch size, fea len, n_channels
 
         # Normalize across channels and add noise
-        spikes = self.norm_and_noise(spikes)
+        spikes = self.smooth_and_noise(spikes)
 
         # Mask neural data. Mask is True for masked bins
         targets_mask = torch.zeros_like(spikes, dtype=torch.int64)
@@ -633,14 +615,6 @@ class NDT1(nn.Module):
         day_idx:           Optional[torch.LongTensor]  = None, # (bs)
         max_new_bins:       Optional[int]               = 16,        
     ) -> NDT1Output:      
-
-        # Deactivate masking and noising during inference
-        prev_mask = self.encoder.mask
-        prev_white= self.encoder.norm_and_noise.white_noise_sd
-        prev_offset = self.encoder.norm_and_noise.constant_offset_sd
-        self.encoder.mask = False
-        self.encoder.norm_and_noise.white_noise_sd = None
-        self.encoder.norm_and_noise.constant_offset_sd = None
         
         bins = []
         preds = []
@@ -665,9 +639,6 @@ class NDT1(nn.Module):
             bins.append(new_bins[:,0,:])
             preds.append(new_preds[:,0,:])
 
-        self.encoder.mask = prev_mask
-        self.encoder.norm_and_noise.white_noise_sd = prev_white
-        self.encoder.norm_and_noise.constant_offset_sd = prev_offset
 
         return torch.stack(preds, 1), torch.stack(bins, 1)    # (bs, max_new_bins, n_channels)
 
@@ -681,14 +652,6 @@ class NDT1(nn.Module):
         day_idx:           Optional[torch.LongTensor]  = None, # (bs)
         max_new_bins:       Optional[int]               = 16,        
     ) -> NDT1Output:      
-
-        # Deactivate masking and noising during inference
-        prev_mask = self.encoder.mask
-        prev_white= self.encoder.norm_and_noise.white_noise_sd
-        prev_offset = self.encoder.norm_and_noise.constant_offset_sd
-        self.encoder.mask = False
-        self.encoder.norm_and_noise.white_noise_sd = None
-        self.encoder.norm_and_noise.constant_offset_sd = None
         
         bins = []
         preds = []
@@ -715,11 +678,6 @@ class NDT1(nn.Module):
             inputs[:,-1:,:] = new_bins
             bins.append(new_bins)
             preds.append(new_preds)
-
-
-        self.encoder.mask = prev_mask
-        self.encoder.norm_and_noise.white_noise_sd = prev_white
-        self.encoder.norm_and_noise.constant_offset_sd = prev_offset
 
         return torch.cat(preds, dim=1), torch.cat(bins, dim=1)    # (bs, max_new_bins, n_channels)
 

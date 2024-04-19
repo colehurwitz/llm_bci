@@ -116,7 +116,6 @@ class BCI(nn.Module):
             targets:             Optional[torch.LongTensor]  = None,     # (bs, seq_len)
     ) -> torch.FloatTensor:                     # (batch, seq_len, hidden_size)
         
-        torch.save([input_ids, attention_mask, input_split, spikes, spikes_mask, targets], "a.pth")
 
         # Embed tokens of sentence
         text_embeds = (self.llm.get_input_embeddings())(input_ids)    # (batch, seq_len, hidden_size)
@@ -164,9 +163,6 @@ class BCI(nn.Module):
             )
         for t,s,d in zip(targets, spikes_mask, input_split)], dim=0)
 
-
-        
-        torch.save([input_embeds, attention_mask, spikes_mask, targets], "b.pth")
         return input_embeds, attention_mask, targets   
         # (batch_size, tot_seq_len, hidden_size), (batch_size, tot_seq_len), (batch_size, tot_seq_len)
 

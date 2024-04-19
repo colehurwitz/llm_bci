@@ -53,6 +53,23 @@ from models.itransformer import *
 from models.trainer import Trainer
 
 
+# Load dataset
+if config.data.data_load == "file":
+    dataset = torch.load(os.path.join(config.data.data_dir, config.data.data_file))
+elif config.data.data_load == "ibl":
+    dataset = load_ibl_dataset(**config.data)
+elif config.data.data_load == "speechbci":
+    dataset = load_competition_data(**config.data)
+    if "vocab_file" in config["data"] and config.data.vocab_file is not None:
+        blank_id = config.method.model_kwargs.blank_id
+        vocab = json.load(open(config.data.vocab_file,"r"))
+        dataset = create_phonemes_ctc_labels(dataset, config.data.vocab_file)
+    if "tokenizer_path" in config["data"] and config.data.tokenizer_path is not None:
+        tokenizer = AutoTokenizer.from_pretrained(config.data.tokenizer_path, add_bos_token=False, add_eos_token=False)
+        dataset = create_llm_labels(dataset, tokenizer, config.data.prompt)
+
+
+
 def probe(model, model_inputs, unused_inputs, outputs, **kwargs):
     a = {k: v.detach().cpu() if isinstance(v, torch.Tensor) else v for k,v in model_inputs.items()}
     b = {k: v.detach().cpu() if isinstance(v, torch.Tensor) else v for k,v in unused_inputs.items()}
@@ -64,7 +81,7 @@ def probe(model, model_inputs, unused_inputs, outputs, **kwargs):
 def wer(model, model_inputs, unused_inputs, outputs, **kwargs):
     preds = outputs["preds"].argmax(-1)[:,:-1]
     targets = outputs["targets"][:,1:]
-    pred_sentences = [tokenizer.decode(p[t!=100]) for t, p  in zip(targets,preds)]
+    pred_sentences = [tokenizer.decode(p[t!=-100]) for t, p  in zip(targets,preds)]
     target_sentences = unused_inputs["sentence"]
     errors, n_words = word_error_count(pred_sentences, target_sentences)
     for i in range(kwargs["n_print"]):
@@ -91,19 +108,20 @@ def get_llm(debug, freeze_llm, llm_path, lora):
             param.requires_grad = False
     return llm
 
+
 # Preload LLM
-debug = True
+debug = False
 freeze_llm = False
 llm_path = "/home/gridsan/dbeneto/MAML-Soljacic_shared/llama2/7b"
 lora = DictConfig({"r": 1, "alpha": 32, "dropout": 0.2, 
       "target_modules": ["q_proj","v_proj","k_proj","o_proj","gate_proj","up_proj","down_proj"],
-      "modules_to_save": ["embed_tokens"]})
+      "modules_to_save": []})
 llm = get_llm(debug, freeze_llm, llm_path, lora)
 
 
 kwargs = {
     "savestring": "bci_test",
-    "training.num_epochs": "500", "training.train_batch_size": "4", "training.test_batch_size": "4",
+    "training.num_epochs": "10", "training.train_batch_size": "1", "training.test_batch_size": "1",
     "optimizer.gradient_accumulation_steps": "1",
     "training.eval_every": "100", "training.save_every": "100", 
     "data.train_len": "null", "data.test_len": "null",
@@ -112,22 +130,6 @@ kwargs = {
 config_file = "configs/trainer_bci.yaml"
 config = update_config(default_trainer_config(), config_file)
 config = update_config(config, config_from_kwargs(kwargs))
-
-# Load dataset
-if config.data.data_load == "file":
-    dataset = torch.load(os.path.join(config.data.data_dir, config.data.data_file))
-elif config.data.data_load == "ibl":
-    dataset = load_ibl_dataset(**config.data)
-elif config.data.data_load == "speechbci":
-    dataset = load_competition_data(**config.data)
-    if "vocab_file" in config["data"] and config.data.vocab_file is not None:
-        blank_id = config.method.model_kwargs.blank_id
-        vocab = json.load(open(config.data.vocab_file,"r"))
-        dataset = create_phonemes_ctc_labels(dataset, config.data.vocab_file)
-    if "tokenizer_path" in config["data"] and config.data.tokenizer_path is not None:
-        tokenizer = AutoTokenizer.from_pretrained(config.data.tokenizer_path, add_bos_token=False, add_eos_token=False)
-        dataset = create_llm_labels(dataset, tokenizer, config.data.prompt)
-
 
 # Adjust lablels for static behaviour decoding
 if config.method.model_kwargs.method_name == "stat_behaviour" and config.method.model_kwargs.loss == "xent":
@@ -190,20 +192,9 @@ elif config.model.model_class == "BCI" and llm is not None:
 
 
 
-rl(models)
-rl(models.trainer)
-rl(models.bci)
-rl(models.itransformer)
-rl(models.ndt1)
-from models.bci import *
-from models.ndt1 import *
-from models.itransformer import *
-from models.trainer import Trainer
-
-config["method"]["model_kwargs"]["load_ndt1_from_pt"] = "pt_checkpoints/ndt1-ctc-opt_64_1.e-3_5.e-5-nl_5-hs_1024-is_1024-d_0.4_0.2-noise_true-context_false_false_false/STEP12200"
 trainer = Trainer(config, dataset=dataset, extra_model_kwargs=extra_model_kwargs, metric_fns={"A": probe, "WER": wer})#, "WER": wer})
 all_batch = []
-trainer.evaluate(eval_train_set=False)
+# trainer.evaluate(eval_train_set=False)
 trainer.train()
 
 a = torch.load("a.pth")

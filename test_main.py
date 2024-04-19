@@ -2,6 +2,7 @@ import yaml
 import os
 import sys
 import json
+from tqdm import tqdm
 import numpy as np
 import torch
 import torch.nn.functional as F
@@ -13,6 +14,9 @@ from utils.config_utils import config_from_kwargs, update_config, DictConfig
 import utils
 import utils.eval_utils
 from utils.eval_utils import format_ctc, word_error_count
+
+import viz_neuron_fit
+from viz_neuron_fit import viz_single_cell
 
 import transformers
 import transformers.models
@@ -48,9 +52,11 @@ rl(models.trainer)
 rl(models.patchtst)
 rl(models.itransformer)
 rl(models.ndt1)
+rl(models.masker)
 from models.patchtst import *
 from models.ndt1 import *
 from models.itransformer import *
+from models.masker import *
 from models.trainer import Trainer
 
 
@@ -79,7 +85,17 @@ kwargs = {
     "data.eid": "671c7ea7-6726-4fbe-adeb-f89c2c8e489b/stimulus_20ms",
     "data.test_size": "0.15",
 }
+config_file = "configs/trainer_stat_behv_itransformer.yaml"
+config = update_config(default_trainer_config(), config_file)
+config = update_config(config, config_from_kwargs(kwargs))   
 
+rl(data_utils)
+rl(data_utils.datasets)
+rl(data_utils.speechbci_dataset)
+rl(data_utils.ibl_dataset)
+from data_utils.speechbci_dataset import *
+from data_utils.ibl_dataset import *
+from data_utils.datasets import *
 
 # Load dataset
 if config.data.data_load == "file":
@@ -165,26 +181,6 @@ all_batches = []
 trainer.train()
 all_batches = []
 trainer.evaluate(eval_train_set=False)
-
-
-# config["model"]["encoder"]["from_pt"] = from_pt
-# config["model"]["decoder"]["from_pt"] = from_pt
-# config["savestring"] = "mlm_ndt_poisson"
-# config["model"]["encoder"]["context"]["forward"] = -2
-# config["method"]["model_kwargs"]["loss"] = "poisson_nll"
-# config["method"]["model_kwargs"]["log_input"] = True
-# config["method"]["model_kwargs"]["method_name"] = "mlm"
-# config["training"]["eval_every"] = 100
-# config["verbosity"] = 0
-# config["model"]["masker"]["mode"] = "full"
-# config["model"]["masker"]["mode"] = "full"
-
-from_pt = "pt_checkpoints/itransformer-671c7ea7-stimulus-20ms-0.15-mlm-opt_16_1.e-4_0.01-mask_true_true_0.2-arch_5_768-d_0.4_0.2-cls_false-embed_false_false_1500-mode_mlp/STEP5600"
-config = DictConfig(torch.load(os.path.join(from_pt, "trainer_config.pth")))
-trainer.model.load_checkpoint(from_pt)
-
-
-
 
 
 
@@ -458,4 +454,17 @@ plt.figure(figsize=(10, 8))
 plt.imshow(similarity_matrix, cmap='hot', interpolation='nearest')
 plt.colorbar()
 plt.title('Pairwise Cosine Similarity Matrix Of Neuron Position Embeddings')
+plt.savefig("plot.png")
+
+plt.clf()
+plt.title("iTransformer Choice 671c7ea7-6726-4fbe-adeb-f89c2c8e489b")
+bars = plt.bar(["depth+region", "depth+region+id"], [86, 90])
+plt.ylim(50, 100)
+plt.ylabel("Choice decoding accuracy")
+for bar in bars:
+    yval = bar.get_height()
+    plt.text(bar.get_x() + bar.get_width()/2, yval, f"{round(yval)}%", 
+            va='bottom')  # vertical alignment
+
+            
 plt.savefig("plot.png")

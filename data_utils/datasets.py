@@ -5,6 +5,8 @@ from typing import Dict, List, Any, Optional, Union, Tuple
 import torch
 import scipy
 import numpy as np
+import math
+import random
 
 from torch.utils.data import Dataset
 
@@ -35,9 +37,9 @@ class SpikingDataset(Dataset):
     def __getitem__(self, idx):
         # Gather all columns and remove special columns
         inputs = deepcopy(self.dataset[idx])
-        _ = [inputs.pop(k) for k in [f"{self.spikes_name}"]]
 
-        spikes = self.dataset[idx][f"{self.spikes_name}"].astype(np.float32)
+        # Add new columns
+        spikes = inputs.pop(f"{self.spikes_name}")                          
         inputs.update({
             "spikes": spikes,                                           # (seq_len, num_channels)
             "spikes_mask": np.ones(spikes.shape[0], dtype=np.int64),    # (seq_len)
@@ -69,6 +71,7 @@ class SpikingDatasetForDecoding(SpikingDataset):
         length: Optional[int] = None,
         spikes_name: Optional[str] = "spikes",
         targets_name: Optional[str] = "targets",
+        **kwargs,
     ):  
         super().__init__(dataset, length)
         
@@ -77,11 +80,10 @@ class SpikingDatasetForDecoding(SpikingDataset):
     def __getitem__(self, idx):
         # Gather all columns and remove special columns
         inputs = deepcopy(self.dataset[idx])
-        _ = [inputs.pop(k) for k in [f"{self.spikes_name}", f"{self.targets_name}"]]
         
         # Add new columns
-        targets = self.dataset[idx][f"{self.targets_name}"]
-        spikes = self.dataset[idx][f"{self.spikes_name}"]
+        spikes = inputs.pop(f"{self.spikes_name}")                          
+        targets = inputs.pop(f"{self.targets_name}") 
         inputs.update({
             "spikes": spikes,                                           # (seq_len, num_channels)
             "spikes_mask": np.ones(spikes.shape[0], dtype=np.int64),    # (seq_len)
@@ -96,7 +98,83 @@ class SpikingDatasetForDecoding(SpikingDataset):
         
 
 
+
+""" Dataset to use for supervised training. 
+INPUTS
+    dataset: list of examples. Each example is a dict.
+    batch_size: number of examples in each day_specifi batch
+    targets_name: name of the labels in the dataset
+    length: the list is trimmed up to this value
+OUTPUTS
+    Dict{
+        spikes: neural data of size (seq_len, num_channels)
+        targets: target labels
+        targets_lengths: length of each sequence of labels (can be 1 for trial-wise magnitudes)
+    }
+"""
+class DaySpecificSpikingDatasetForDecoding(SpikingDataset):
+
+    def __init__(
+        self, 
+        dataset: List[Dict[str,Union[np.ndarray,Any]]], 
+        batch_size,
+        length: Optional[int]       = None,
+        spikes_name: Optional[str]  = "spikes",
+        targets_name: Optional[str] = "targets",
+    ):  
+        super().__init__(dataset, length)
+        
+        self.batch_size = batch_size
+        self.targets_name = targets_name
+        self.day_idxs = set(int(row["day_idx"]) for row in dataset)
+        self.day_datasets = {
+            i: [row for row in dataset if int(row["day_idx"]) == i]
+            for i in self.day_idxs
+        }
+        self.possible_idx = {i: [j for j in range(len(self.day_datasets[i]))] for i in self.day_idxs}
+        for i in self.day_idxs:
+            random.shuffle(self.possible_idx[i])
+    def __len__(self):
+        return sum(math.ceil(len(ds)/self.batch_size) for ds in self.day_datasets.values())
+
+    def __getitem__(self, idx):
+        
+        # Get corresponding day indx
+        day_idx = -1
+        cum_batches = 0
+        while cum_batches < idx+1:
+            cum_batches += math.ceil(len(self.day_datasets[day_idx+1])/self.batch_size)
+            day_idx += 1
+        
+        batch_idx = []
+        while len(batch_idx) < self.batch_size and len(self.possible_idx[day_idx]) > 0:
+            batch_idx.append(self.possible_idx[day_idx].pop())
+        if len(self.possible_idx[day_idx]) == 0:
+            self.possible_idx[day_idx] = [j for j in range(len(self.day_datasets[day_idx]))]
+            random.shuffle(self.possible_idx[day_idx])
+        
+        def get_item_from_day(ds, day_idx, idx):
+            # Gather all columns and remove special columns
+            inputs = deepcopy(ds.day_datasets[day_idx][idx])
             
+            # Add new columns
+            spikes = inputs.pop(f"{ds.spikes_name}")                         
+            targets = inputs.pop(f"{ds.targets_name}")                       
+            inputs.update({
+                "spikes": spikes,                                           # (seq_len, num_channels)
+                "spikes_mask": np.ones(spikes.shape[0], dtype=np.int64),    # (seq_len)
+                "spikes_timestamp": np.arange(0,spikes.shape[0]),           # (seq_len)
+                "spikes_spacestamp": np.arange(0,spikes.shape[1]),          # (num_channels)
+                "spikes_lengths": np.asarray(spikes.shape[0]),              # (1)
+                "targets": targets,                                         # (tar_len)
+                "targets_mask": np.ones_like(targets),                      # (tar_len)
+                "targets_lengths": np.asarray(targets.shape[0]),            # (1)
+            })
+            return inputs
+        
+        return [get_item_from_day(self, day_idx, j) for j in batch_idx]
+            
+
 
 """ Batches a ``list`` of ``np.ndarray`` that only differ in sizes in dimension ``dim``, padding with
 ``pad value``.
@@ -161,6 +239,10 @@ def pad_collate_fn(
     pad_dict: Dict[str,Dict[str,Any]],
 ) -> Tuple[Dict[str,Union[torch.Tensor, List[Union[torch.Tensor, Any]]]]]:
     
+    # Case when the batching is done in the dataset
+    if isinstance(batch[0], list):
+        batch = [row for sub_batch in batch for row in sub_batch]
+
     keys = batch[0].keys()
     pad_keys = pad_dict.keys()
     array_keys = [k for k in keys if isinstance(batch[0][k],np.ndarray) and batch[0][k].dtype.type != np.str_]
@@ -173,7 +255,7 @@ def pad_collate_fn(
             if key in pad_keys:
                 value = torch.from_numpy(padded_array([row[key] for row in batch],**pad_dict[key])).clone()
             elif len(set(row[key].shape for row in batch)) == 1:
-                value = torch.tensor(np.asarray([row[key] for row in batch]))
+                value = torch.from_numpy(np.stack([row[key] for row in batch], axis=0))
             else:
                 value = [torch.from_numpy(row[key]) for row in batch]
         else:

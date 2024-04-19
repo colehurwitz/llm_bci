@@ -14,11 +14,12 @@ dirs:
 
 # Training configuration
 training:
-  num_epochs: 100
-  train_batch_size: 2
-  test_batch_size: 2      
+  num_epochs: 10
+  train_batch_size: 1
+  test_batch_size: 1      
   shuffle_test_dataloader: false    # Shuffle test dataloader between epochs
   drop_last_test_dataloader: true   # Drop last batch to ensure same batch size
+  drop_last_train_dataloader: false   # Drop last batch to ensure same batch size
   save_every: 500  # Save checkpoint
   eval_every: 500  # Eval model
 
@@ -37,7 +38,8 @@ data:
 
   data_load: speechbci
   data_dir: /home/gridsan/dbeneto/MAML-Soljacic_shared/BCI/data/competitionData
-  zscore: True
+  zscore_day: True
+  zscore_block: False
   date_idxs: null
   tokenizer_path: /home/gridsan/dbeneto/MAML-Soljacic_shared/llama2/tokenizer
   prompt: "neural activity:#-> sentence:"
@@ -47,20 +49,19 @@ method:
   model_kwargs:
     method_name: endtoend
 
-    load_ndt1_from_pt: "pt_checkpoints/ndt1-ctc-opt_64_1.e-3_5.e-5-nl_5-hs_1024-is_1024-d_0.4_0.2-noise_true-context_false_false_false/STEP12200"
+    load_ndt1_from_pt: "pt_checkpoints/ndt1-ctc-seed_4-opt_64_1.e-3_5.e-5-arch_5_1024_1024-d_0.4_0.2-noise_true-smooth_null-context_false_false_false-dsdecoding_false_true/STEP8800"
     llm_path: /home/gridsan/dbeneto/MAML-Soljacic_shared/llama2/7b
     lora:
       r: 8
       alpha: 32
       dropout: 0.2
       target_modules: ["q_proj","v_proj","k_proj","o_proj","gate_proj","up_proj","down_proj"]
-      modules_to_save: ["embed_tokens"]
+      modules_to_save: []
     freeze_llm: false
 
     vocab_size: 41
     blank_id: 0
     zero_infinity: true
-
 
   dataset_kwargs:
     targets_name: labels

@@ -4,11 +4,12 @@ import yaml
 import argparse
 
 import numpy as np
-
 import torch
+from transformers import AutoTokenizer
+
 from utils.config_utils import config_from_kwargs, update_config, ParseKwargs, DictConfig
 from utils.eval_utils import format_ctc, word_error_count
-from data_utils.speechbci_dataset import load_competition_data, create_phonemes_ctc_labels
+from data_utils.speechbci_dataset import load_competition_data, create_phonemes_ctc_labels, create_llm_labels
 from data_utils.ibl_dataset import load_ibl_dataset
 from models.trainer import Trainer, default_trainer_config
 
@@ -30,6 +31,10 @@ def main(args):
             blank_id = config.method.model_kwargs.blank_id
             vocab = json.load(open(config.data.vocab_file,"r"))
             dataset = create_phonemes_ctc_labels(dataset, config.data.vocab_file)
+        if "tokenizer_path" in config["data"] and config.data.tokenizer_path is not None:
+            tokenizer = AutoTokenizer.from_pretrained(config.data.tokenizer_path, add_bos_token=False, add_eos_token=False)
+            dataset = create_llm_labels(dataset, tokenizer, config.data.prompt)
+
 
 
     # Adjust lablels for static behaviour decoding
@@ -72,6 +77,29 @@ def main(args):
             return torch.tensor(errors/n_phonemes, device=model_inputs["spikes"].device)
         eval_metric_fns.update({"CER": eval_cer})
 
+
+    # Add BCI metric fns
+    if config.method.model_kwargs.method_name == "endtoend":
+        def wer(model, model_inputs, unused_inputs, outputs, **kwargs):
+            preds = outputs["preds"].argmax(-1)[:,:-1]
+            targets = outputs["targets"][:,1:]
+            pred_sentences = [tokenizer.decode(p[t!=-100]) for t, p  in zip(targets,preds)]
+            target_sentences = unused_inputs["sentence"]
+            errors, n_words = word_error_count(pred_sentences, target_sentences)
+            return torch.tensor(errors/n_words, device=model_inputs["spikes"].device)
+        metric_fns.update({"WER": wer})
+
+        def eval_wer(model, model_inputs, unused_inputs, outputs, **kwargs):
+            preds = outputs["preds"].argmax(-1)[:,:-1]
+            targets = outputs["targets"][:,1:]
+            pred_sentences = [tokenizer.decode(p[t!=-100]) for t, p  in zip(targets,preds)]
+            target_sentences = unused_inputs["sentence"]
+            errors, n_words = word_error_count(pred_sentences, target_sentences)
+            for i in range(kwargs["n_print"]):
+                print(pred_sentences[i], "\n#####\n ", 
+                    target_sentences[i], "\n#####\n\n ")
+            return torch.tensor(errors/n_words, device=model_inputs["spikes"].device)
+        eval_metric_fns.update({"WER": eval_wer})
 
     # Get regions for region embeddings
     if config.model.model_class == "iTransformer" and config.model.encoder.embed_region:

@@ -21,7 +21,7 @@ from accelerate import Accelerator
 from datasets import load_dataset
 
 from utils.config_utils import DictConfig, config_from_kwargs, update_config
-from data_utils.datasets import SpikingDataset, SpikingDatasetForDecoding, pad_collate_fn
+from data_utils.datasets import SpikingDataset, SpikingDatasetForDecoding, DaySpecificSpikingDatasetForDecoding, pad_collate_fn
 from models.patchtst import PatchTSTForSpikingActivity
 from models.itransformer import iTransformer
 from models.ndt1 import NDT1
@@ -29,7 +29,7 @@ from models.bci import BCI
 
 """ Mapping from dataset class names to dataset class. New dataset classes should be registered here
 """
-NAME2DATASET = {"base": SpikingDataset, "decoding": SpikingDatasetForDecoding}
+NAME2DATASET = {"base": SpikingDataset, "decoding": SpikingDatasetForDecoding, "day": DaySpecificSpikingDatasetForDecoding}
 
 """ Mapping from model class names to model class. New model classes should be registered here
 """
@@ -214,7 +214,7 @@ class Trainer():
 
         # ToDo Custom DataLoaders?
         self.train_dataloader = DataLoader(
-            self.train_dataset, shuffle=True, collate_fn=partial(pad_collate_fn, model_inputs=self.model_inputs, **self.config.method.dataloader_kwargs), batch_size=self.config.training.train_batch_size, pin_memory=True, drop_last=True,
+            self.train_dataset, shuffle=True, collate_fn=partial(pad_collate_fn, model_inputs=self.model_inputs, **self.config.method.dataloader_kwargs), batch_size=self.config.training.train_batch_size, pin_memory=True, drop_last=self.config.training.drop_last_train_dataloader,
         )
 
         self.test_dataloader = DataLoader(

@@ -52,8 +52,12 @@ def load_ibl_dataset(
     for split in raw_dataset.keys():
         dataset_dict[split] = {}
         dataset_dict[split]["spikes"] = get_binned_spikes_from_sparse(raw_dataset[split]["spikes_sparse_data"], raw_dataset[split]["spikes_sparse_indices"], raw_dataset[split]["spikes_sparse_indptr"], raw_dataset[split]["spikes_sparse_shape"])
-        dataset_dict[split]["regions"] = raw_dataset[split]["cluster_regions"]
-        dataset_dict[split]["depths"] = np.asarray(raw_dataset[split]["cluster_depths"], dtype=np.float32)
+        if "cluster_uuids" in raw_dataset[split].column_names:
+            dataset_dict[split]["uuids"] = raw_dataset[split]["cluster_uuids"]
+        if "cluster_regions" in raw_dataset[split].column_names:
+            dataset_dict[split]["regions"] = raw_dataset[split]["cluster_regions"]
+        if "cluster_depths" in raw_dataset[split].column_names:
+            dataset_dict[split]["depths"] = np.asarray(raw_dataset[split]["cluster_depths"], dtype=np.float32)
         for beh in static_behaviours:
             dataset_dict[split][beh] = raw_dataset[split][beh]
         exclude_idx = []

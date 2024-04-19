@@ -75,7 +75,8 @@ def cer(model, model_inputs, unused_inputs, outputs, **kwargs):
 
 kwargs = {
     "savestring": "ndt1_ctc_test",
-    "training.num_epochs": "500", "training.train_batch_size": "16", "training.test_batch_size": "16",
+    "training.num_epochs": "500", "training.train_batch_size": "1", "training.test_batch_size": "1",
+    "method.dataset_kwargs.batch_size": "64",
     "optimizer.gradient_accumulation_steps": "1",
     "training.eval_every": "100", "training.save_every": "100", 
     "data.train_len": "null", "data.test_len": "null",
@@ -85,14 +86,6 @@ config_file = "configs/trainer_ctc_ndt1.yaml"
 config = update_config(default_trainer_config(), config_file)
 config = update_config(config, config_from_kwargs(kwargs))
 
-
-rl(data_utils)
-rl(data_utils.datasets)
-rl(data_utils.speechbci_dataset)
-rl(data_utils.ibl_dataset)
-from data_utils.speechbci_dataset import *
-from data_utils.ibl_dataset import *
-from data_utils.datasets import *
 
 
 # Load dataset
@@ -108,6 +101,11 @@ elif config.data.data_load == "speechbci":
         dataset = create_phonemes_ctc_labels(dataset, config.data.vocab_file)
     if "tokenizer_path" in config["data"] and config.data.tokenizer_path is not None:
         dataset = create_llm_labels(dataset, config.data.tokenizer_path, config.data.prompt)
+
+
+
+config = update_config(default_trainer_config(), config_file)
+config = update_config(config, config_from_kwargs(kwargs))
 
 
 
@@ -167,11 +165,28 @@ elif config.model.model_class == "NDT1":
 
 
 
+rl(data_utils)
+rl(data_utils.datasets)
+rl(data_utils.speechbci_dataset)
+rl(data_utils.ibl_dataset)
+from data_utils.speechbci_dataset import *
+from data_utils.ibl_dataset import *
+from data_utils.datasets import *
 
+rl(models)
+rl(models.trainer)
+rl(models.patchtst)
+rl(models.itransformer)
+rl(models.ndt1)
+from models.patchtst import *
+from models.ndt1 import *
+from models.itransformer import *
+from models.trainer import Trainer
 # print(yaml.dump(dict(config), allow_unicode=True, default_flow_style=False))
-
-
 trainer = Trainer(config, dataset=dataset, metric_fns={"A": probe, "CER": cer})#, "WER": wer})
+it = iter(trainer.train_dataloader)
+all_ex = [ex for i,ex in enumerate(trainer.train_dataloader)]
+
 all_batch = []
 trainer.evaluate(eval_train_set=False)
 trainer.train()

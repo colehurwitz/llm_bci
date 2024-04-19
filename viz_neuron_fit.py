@@ -1,7 +1,9 @@
+import os
 import matplotlib.pyplot as plt
 import numpy as np
 from sklearn.cluster import SpectralClustering
 from sklearn.metrics import r2_score
+
 
 """
 :X: [n_trials, n_timesteps, n_variables]
@@ -14,7 +16,7 @@ from sklearn.metrics import r2_score
 """
 def plot_psth(X, y, y_pred, var_tasklist, var_name2idx, var_value2label,
               aligned_tbins=[],
-              axes=None, legend=False, neuron_idx=0):
+              axes=None, legend=False, neuron_idx='', neuron_region=''):
     if axes is None:
         nrows = 1; ncols = len(var_tasklist)
         fig, axes = plt.subplots(nrows, ncols, figsize=(3 * ncols, 2 * nrows))
@@ -46,8 +48,8 @@ def plot_psth(X, y, y_pred, var_tasklist, var_name2idx, var_value2label,
     idxs_psth = np.concatenate([var_name2idx[var] for var in var_tasklist])
     psth_xy = compute_all_psth(X, y, idxs_psth)
     psth_pred_xy = compute_all_psth(X, y_pred, idxs_psth)
-    r2_psth = compute_R2_psth(psth_xy, psth_pred_xy)
-    r2_single_trial = np.mean(compute_R2_main(y, y_pred, clip=False))
+    r2_psth = compute_R2_psth(psth_xy, psth_pred_xy, clip=False)
+    r2_single_trial = compute_R2_main(y.reshape(-1,1), y_pred.reshape(-1,1), clip=False)[0]
     '''
     axes[-1].annotate(f'PSTH R2: {r2_psth:.2f}'+"\n"+f"#conds: {len(psth_xy.keys())}", 
                         xy=(y.shape[1], 0), 
@@ -55,7 +57,7 @@ def plot_psth(X, y, y_pred, var_tasklist, var_name2idx, var_value2label,
                         ha='left', 
                         rotation=90)
     '''
-    axes[0].set_ylabel(f'Neuron: #{neuron_idx} \n PSTH R2: {r2_psth:.2f} \n Pred R2: {r2_single_trial:.2f}')
+    axes[0].set_ylabel(f'Neuron: #{neuron_idx[:4]} \n PSTH R2: {r2_psth:.2f} \n Avg_SingleTrial R2: {r2_single_trial:.2f}')
     
     
     for ax in axes:
@@ -65,8 +67,7 @@ def plot_psth(X, y, y_pred, var_tasklist, var_name2idx, var_value2label,
         # ax.tick_params(bottom=False, left=False)
     plt.tight_layout()
 
-
-
+    return r2_psth, r2_single_trial
 
 """
 :X: [n_trials, n_timesteps, n_variables]
@@ -112,12 +113,13 @@ def plot_single_trial_activity(X, y, y_pred,
         y_psth = np.mean(y, 0)
         y_predpsth = np.mean(y_pred, 0)
         y = y -y_psth  # (K, T)
-        y_pred = y-y_predpsth  # (K, T)
+        y_pred = y_pred -y_predpsth  # (K, T)
     else:
         assert False, "Unknown subtract_psth, has to be one of: task, global. \'\'"
     y_residual = (y_pred - y)  # (K, T), residuals of prediction
     idxs_behavior = np.concatenate(([var_name2idx[var] for var in var_behlist])) if len(var_behlist)>0 else []
     X_behs = X[:, :, idxs_behavior]
+
 
     ### plot single-trial activity
     # arange the trials by unsupervised clustering labels
@@ -209,18 +211,18 @@ This script generates a plot to examine the (single-trial) fitting of a single n
 
 
 def viz_single_cell(X, y, y_pred, var_name2idx, var_tasklist, var_value2label, var_behlist,
-                    subtract_psth="task", aligned_tbins=[], clusby='y_pred', neuron_idx=0, save_name="plot.png"):
+                    subtract_psth="task", aligned_tbins=[], clusby='y_pred', neuron_idx='', neuron_region='', method='', save_path=None):
     nrows = 8
     plt.figure(figsize=(8, 2 * nrows))
 
     ### plot psth
     axes_psth = [plt.subplot(nrows, len(var_tasklist), k+1) for k in range(len(var_tasklist))]
-    plot_psth(X, y, y_pred,
+    r2_psth, r2_trial = plot_psth(X, y, y_pred,
               var_tasklist=var_tasklist,
               var_name2idx=var_name2idx,
               var_value2label=var_value2label,
               aligned_tbins=aligned_tbins,
-              axes=axes_psth, legend=True, neuron_idx=neuron_idx)
+              axes=axes_psth, legend=True, neuron_idx=neuron_idx, neuron_region=neuron_region)
 
     ### plot the psth-subtracted activity
     axes_single = [plt.subplot(nrows, 1, k) for k in range(2, 2 + 2 + len(var_behlist) + 2)]
@@ -232,10 +234,14 @@ def viz_single_cell(X, y, y_pred, var_name2idx, var_tasklist, var_value2label, v
                                clusby=clusby,
                                axes=axes_single)
 
-    fig_name = save_name
-    plt.savefig(fig_name)
-    plt.tight_layout()
-    # plt.show()
+    # print((neuron_region, neuron_idx, r2, method))
+    
+    if save_path:
+        if not os.path.exists(save_path):
+            os.makedirs(save_path)
+        plt.savefig(os.path.join(save_path, f'{neuron_region}_{neuron_idx}_{r2_trial:.2f}_{method}.png'))
+
+    return r2_psth, r2_trial
 
 def _add_baseline(ax, aligned_tbins=[40]):
     for tbin in aligned_tbins:
@@ -295,11 +301,18 @@ psth_xy/ psth_pred_xy: {tuple(x): (T) or (T,N)}
 return a float or (N) array
 """
 def compute_R2_psth(psth_xy, psth_pred_xy, clip=True):
-    # compute r2 along dim 0
-    r2s = [r2_score(psth_xy[x], psth_pred_xy[x], multioutput='raw_values') for x in psth_xy]
+    psth_xy_array = np.array([psth_xy[x] for x in psth_xy])
+    psth_pred_xy_array = np.array([psth_pred_xy[x] for x in psth_xy])
+    K,T = psth_xy_array.shape[:2]
+    psth_xy_array = psth_xy_array.reshape((K*T,-1))
+    psth_pred_xy_array = psth_pred_xy_array.reshape((K*T,-1))
+    r2s = [r2_score(psth_xy_array[:,ni], psth_pred_xy_array[:,ni]) for ni in range(psth_xy_array.shape[1])]
+    r2s = np.array(r2s)
+    # # compute r2 along dim 0
+    # r2s = [r2_score(psth_xy[x], psth_pred_xy[x], multioutput='raw_values') for x in psth_xy]
     if clip:
         r2s = np.clip(r2s,0.,1.)
-    r2s = np.mean(r2s, 0)
+    # r2s = np.mean(r2s, 0)
     if len(r2s) == 1:
         r2s = r2s[0]
     return r2s

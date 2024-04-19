@@ -116,9 +116,11 @@ def load_competition_data(
 
     if zscore_day:
         spikes_by_day = {i: np.concatenate([row["spikes"] for row in dataset_dict["train"] if int(row["day_idx"]) == i],axis=0) for i in day_idxs}
+        spikes_mean = {i: np.mean(v, axis=0) for i,v in spikes_by_day.items()}
+        spikes_std = {i: np.std(v, axis=0) for i,v in spikes_by_day.items()}
         for split in splits:
             for i, row in enumerate(dataset_dict[split]):
-                dataset_dict[split][i]["spikes"] = (dataset_dict[split][i]["spikes"] - np.mean(spikes_by_day[int(row["day_idx"])],axis=0)) / np.std(spikes_by_day[int(row["day_idx"])],axis=0)
+                dataset_dict[split][i]["spikes"] = (dataset_dict[split][i]["spikes"] - spikes_mean[int(row["day_idx"])]) / spikes_std[int(row["day_idx"])]
 
     return dataset_dict
 

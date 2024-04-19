@@ -1,5 +1,6 @@
 # My files
 .gitignore
+plots
 sweep*
 pt_checkpoints
 TODO.txt

@@ -15,8 +15,8 @@ dirs:
 # Training configuration
 training:
   num_epochs: 75
-  train_batch_size: 1
-  test_batch_size: 1      
+  train_batch_size: 64
+  test_batch_size: 64    
   shuffle_test_dataloader: false    # Shuffle test dataloader between epochs
   drop_last_test_dataloader: false   # Drop last batch to ensure same batch size
   drop_last_train_dataloader: false   # Drop last batch to ensure same batch size

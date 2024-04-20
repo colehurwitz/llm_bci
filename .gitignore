@@ -1,8 +1,9 @@
 # My files
 .gitignore
+change_name.py
 plots
 sweep*
-pt_checkpoints
+*checkpoints*
 TODO.txt
 *.sh
 *paths.yaml

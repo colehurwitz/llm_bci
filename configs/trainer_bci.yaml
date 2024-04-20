@@ -14,7 +14,7 @@ dirs:
 
 # Training configuration
 training:
-  num_epochs: 10
+  num_epochs: 5
   train_batch_size: 1
   test_batch_size: 1      
   shuffle_test_dataloader: false    # Shuffle test dataloader between epochs
@@ -31,15 +31,15 @@ data:
   hf_dataset_name: null
   json_dataset_name: null
 
-  train_name: train   # name of the train split in the raw datasete
-  test_name: test     # name of the test split in the raw datasete
+  train_name: train   # name of the train split in the raw dataset
+  test_name: test     # name of the test split in the raw dataset
   train_len: null     # used length of the train dataset. null to use all
   test_len: null      # used length of the test dataset. null to use all
 
   data_load: speechbci
   data_dir: /home/gridsan/dbeneto/MAML-Soljacic_shared/BCI/data/competitionData
   zscore_day: True
-  zscore_block: False
+  zscore_block: True
   date_idxs: null
   tokenizer_path: /home/gridsan/dbeneto/MAML-Soljacic_shared/llama2/tokenizer
   prompt: "neural activity:#-> sentence:"
@@ -49,7 +49,7 @@ method:
   model_kwargs:
     method_name: endtoend
 
-    load_ndt1_from_pt: "pt_checkpoints/ndt1-ctc-seed_4-opt_64_1.e-3_5.e-5-arch_5_1024_1024-d_0.4_0.2-noise_true-smooth_null-context_false_false_false-dsdecoding_false_true/STEP8800"
+    load_ndt1_from_pt: null
     llm_path: /home/gridsan/dbeneto/MAML-Soljacic_shared/llama2/7b
     lora:
       r: 8
@@ -65,6 +65,7 @@ method:
 
   dataset_kwargs:
     targets_name: labels
+    batch_size: 1
 
   dataloader_kwargs:
     pad_dict:
@@ -117,10 +118,10 @@ method:
 
 optimizer:
   gradient_accumulation_steps: 1
-  lr: 1.e-4
+  lr: 5.e-5
   wd: 5.e-5
   eps: 1.e-8
   warmup_pct: 0.0 # cosine/linear
   gamma: 0.95     # step
   div_factor: 25  # cosine
-  scheduler: step # step/cosine/linear
+  scheduler: cosine # step/cosine/linear

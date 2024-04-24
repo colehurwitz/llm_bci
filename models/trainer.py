@@ -293,15 +293,15 @@ class Trainer():
                 outputs = self.model(**model_inputs)
                 loss = outputs.loss
                 examples = outputs.n_examples
-     
-            # Loss
-            test_loss.append(self.accelerator.gather(loss).sum().detach().item())
-            test_examples.append(self.accelerator.gather(examples).sum().detach().item())
 
-            # Metrics
-            for name, fn in metric_fns.items():
-                test_metrics[name].append(self.accelerator.gather(fn(self.model, model_inputs, unused_inputs, outputs.to_dict(), **self.metric_kwargs)).sum().detach().item())
+                 # Loss
+                test_loss.append(self.accelerator.gather(loss).sum().detach().item())
+                test_examples.append(self.accelerator.gather(examples).sum().detach().item())
 
+                # Metrics
+                for name, fn in metric_fns.items():
+                    test_metrics[name].append(self.accelerator.gather(fn(self.model, model_inputs, unused_inputs, outputs.to_dict(), **self.metric_kwargs)).sum().detach().item())
+            
 
         test_avg_loss = sum(test_loss) / sum(test_examples) if sum(test_examples) > 0 else 0
         test_avg_metrics = {k: sum(v)/len(v) for k, v in test_metrics.items()}

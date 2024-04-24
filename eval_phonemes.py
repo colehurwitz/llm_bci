@@ -56,7 +56,7 @@ def main(args):
                 "do_sample": False, #"temperature": 1.0,  "top_p": 0.6, "top_k": 40, 
                 "num_beams": beams, 
                 "num_beam_groups": beams, "diversity_penalty": 1.2,
-                "repetition_penalty": 1.0, "length_penalty": 1.0, "no_repeat_ngram_size": 2, 
+                "repetition_penalty": 1.0, "length_penalty": 1.0, 
                 "renormalize_logits": True, 
                 "low_memory": True,
                 "num_return_sequences": beams, "output_scores": True, "return_dict_in_generate": True,
@@ -71,9 +71,10 @@ def main(args):
             }
         preds = model.generate(**model_inputs, **gen_config)
         if beams > 1:
-            pred = preds.sequences[0]
+            preds = preds.sequences.detach().cpu()
         else:
-            pred = preds[0]
+            preds = preds.detach().cpu()
+        pred = preds[0]
         pred_sentence = tokenizer.decode(pred, skip_special_tokens=True).strip()
         target_sentence = unused_inputs["sentence"][0]
         errors, n_words = word_error_count(pred_sentence, target_sentence)
@@ -98,7 +99,8 @@ def main(args):
     config["model"]["from_pt"] = from_pt
     config["training"]["test_batch_size"] = 1
     config["data"]["test_len"] = test_len
-    config["method"]["metric_kwargs"]["n_beams"] = 1
+    config["method"]["metric_kwargs"]["n_beams"] = beams
+
     # Load dataset
     if config.data.data_load == "file":
         dataset = torch.load(os.path.join(config.data.data_dir, config.data.data_file))
@@ -115,7 +117,6 @@ def main(args):
             dataset = create_llm_labels(dataset, tokenizer, config.data.prompt)
 
 
-    config["method"]["metric_kwargs"]["n_beams"] = beams
     trainer = Trainer(config, dataset=dataset, metric_fns={"WER": wer})
     all_preds = []
     trainer.evaluate(eval_train_set=False)
@@ -127,3 +128,35 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     main(args)
+
+
+
+import torch
+import numpy as np
+from transformers import AutoModelForCausalLM, LlamaConfig, AutoTokenizer
+from utils.eval_utils import word_error_count
+
+a = torch.load("/home/gridsan/dbeneto/TFG/BCI/seed_1-freeze-opt_8_1.e-4-beams_1_dec.pth")
+tokenizer = AutoTokenizer.from_pretrained("/home/gridsan/dbeneto/MAML-Soljacic_shared/llama2/tokenizer")
+
+words = []
+errors = []
+for row in a:
+    pred = tokenizer.batch_decode(row[0],skip_special_tokens=True)[0].strip()
+    sentence = row[1]
+    new_errors, new_words = word_error_count(pred, sentence)
+    words.append(new_words)
+    errors.append(new_errors)
+
+
+words = np.array(words)
+errors = np.array(errors)
+n_resamples = 10000
+resampled_wer = np.zeros([n_resamples,])
+for i in range(n_resamples):
+    resample_idx = np.random.randint(0, words.shape[0], [words.shape[0]])
+    resampled_wer[i] = np.sum(errors[resample_idx]) / np.sum(words[resample_idx])
+
+
+wer_CI = np.percentile(resampled_wer, [2.5, 97.5])
+wer_CI

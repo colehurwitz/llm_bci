@@ -53,6 +53,26 @@ from models.itransformer import *
 from models.trainer import Trainer
 
 
+def probe(model, model_inputs, unused_inputs, outputs, **kwargs):
+    a = {k: v.detach().cpu() if isinstance(v, torch.Tensor) else v for k,v in model_inputs.items()}
+    b = {k: v.detach().cpu() if isinstance(v, torch.Tensor) else v for k,v in unused_inputs.items()}
+    c = {k: v.detach().cpu() if isinstance(v, torch.Tensor) else v for k,v in outputs.items() if v is not None}
+    all_batch.append({"inputs": a, "unused": b, "outputs": c})
+    return torch.tensor(0.0)
+
+
+def assisted_wer(model, model_inputs, unused_inputs, outputs, **kwargs):
+    preds = outputs["preds"].argmax(-1)[:,:-1]
+    targets = outputs["targets"][:,1:]
+    pred_sentences = [tokenizer.decode(p[t!=-100], skip_special_tokens=True) for t, p  in zip(targets,preds)]
+    target_sentences = unused_inputs["sentence"]
+    errors, n_words = word_error_count(pred_sentences, target_sentences)
+    for i in range(kwargs["n_print"]):
+        print("-" + pred_sentences[i] + "-", "\n#####\n")
+        print("-" + target_sentences[i] + "-", "\n#####\n\n ")
+    return torch.tensor(errors/n_words, device=model_inputs["spikes"].device)
+
+
 # Load dataset
 if config.data.data_load == "file":
     dataset = torch.load(os.path.join(config.data.data_dir, config.data.data_file))
@@ -69,25 +89,6 @@ elif config.data.data_load == "speechbci":
         dataset = create_llm_labels(dataset, tokenizer, config.data.prompt)
 
 
-
-def probe(model, model_inputs, unused_inputs, outputs, **kwargs):
-    a = {k: v.detach().cpu() if isinstance(v, torch.Tensor) else v for k,v in model_inputs.items()}
-    b = {k: v.detach().cpu() if isinstance(v, torch.Tensor) else v for k,v in unused_inputs.items()}
-    c = {k: v.detach().cpu() if isinstance(v, torch.Tensor) else v for k,v in outputs.items() if v is not None}
-    all_batch.append({"inputs": a, "unused": b, "outputs": c})
-    return torch.tensor(0.0)
-
-
-def wer(model, model_inputs, unused_inputs, outputs, **kwargs):
-    preds = outputs["preds"].argmax(-1)[:,:-1]
-    targets = outputs["targets"][:,1:]
-    pred_sentences = [tokenizer.decode(p[t!=-100]) for t, p  in zip(targets,preds)]
-    target_sentences = unused_inputs["sentence"]
-    errors, n_words = word_error_count(pred_sentences, target_sentences)
-    for i in range(kwargs["n_print"]):
-        print(pred_sentences[i], "\n#####\n ", 
-            target_sentences[i], "\n#####\n\n ")
-    return torch.tensor(errors/n_words)
 
 
 llm = None
@@ -111,11 +112,9 @@ def get_llm(debug, freeze_llm, llm_path, lora):
 
 # Preload LLM
 debug = False
-freeze_llm = False
-llm_path = "/home/gridsan/dbeneto/MAML-Soljacic_shared/llama2/7b"
-lora = DictConfig({"r": 1, "alpha": 32, "dropout": 0.2, 
-      "target_modules": ["q_proj","v_proj","k_proj","o_proj","gate_proj","up_proj","down_proj"],
-      "modules_to_save": []})
+freeze_llm = config.method.model_kwargs.freeze_llm
+llm_path = config.method.model_kwargs.llm_path
+lora = config.method.model_kwargs.lora
 llm = get_llm(debug, freeze_llm, llm_path, lora)
 
 
@@ -191,41 +190,86 @@ elif config.model.model_class == "BCI" and llm is not None:
     extra_model_kwargs["llm"] = llm
 
 
-
-trainer = Trainer(config, dataset=dataset, extra_model_kwargs=extra_model_kwargs, metric_fns={"A": probe, "WER": wer})#, "WER": wer})
-all_batch = []
-# trainer.evaluate(eval_train_set=False)
-trainer.train()
-
-a = torch.load("a.pth")
-b = torch.load("b.pth")
-input_ids = a[0]
-attention_mask = a[1]
-input_split = a[2]
-spikes = a[3]
-spikes_mask = a[4]
-targets = a[5]
-input_embeds = b[0]
-new_attention_mask = b[1]
-new_spikes_mask = b[2]
-new_targets = b[3]
-
-# config["model"]["encoder"]["from_pt"] = from_pt
-# config["model"]["decoder"]["from_pt"] = from_pt
-# config["savestring"] = "mlm_ndt_poisson"
-# config["model"]["encoder"]["context"]["forward"] = -2
-# config["method"]["model_kwargs"]["loss"] = "poisson_nll"
-# config["method"]["model_kwargs"]["log_input"] = True
-# config["method"]["model_kwargs"]["method_name"] = "mlm"
-# config["training"]["eval_every"] = 100
-# config["verbosity"] = 0
-# config["model"]["masker"]["mode"] = "full"
-# config["model"]["masker"]["mode"] = "full"
-
-
-from_pt = "pt_checkpoints/ndt1-ctc-opt_64_1.e-3_5.e-5-nl_5-hs_1024-is_1024-d_0.4_0.2-noise_true-context_false_false_false/STEP12200"
+from_pt = "/home/gridsan/dbeneto/TFG/BCI/bci_checkpoints/seed_3-bci_train_null-opt_8_1.e-4_5.e-5-arch_2048-stack_1-lora_8-freeze_false-pt_pt_checkpoints/ndt1-ctc-seed_2-opt_64_1.e-3_5.e-5-arch_5_1024_1024-d_0.4_0.2-noise_true-smooth_2-context_-2_false_false_false-ds-decoding_true_true-stack_32_4/STEP10300/STEP36000"
 config = DictConfig(torch.load(os.path.join(from_pt, "trainer_config.pth")))
-trainer.model.load_checkpoint(from_pt)
+extra_model_kwargs = None
+config["model"]["from_pt"] = from_pt
+config["training"]["test_batch_size"] = 1
+config["data"]["test_len"] = None
+config["method"]["metric_kwargs"]["n_beams"] = 1
+# Load dataset
+if config.data.data_load == "file":
+    dataset = torch.load(os.path.join(config.data.data_dir, config.data.data_file))
+elif config.data.data_load == "ibl":
+    dataset = load_ibl_dataset(**config.data)
+elif config.data.data_load == "speechbci":
+    dataset = load_competition_data(**config.data)
+    if "vocab_file" in config["data"] and config.data.vocab_file is not None:
+        blank_id = config.method.model_kwargs.blank_id
+        vocab = json.load(open(config.data.vocab_file,"r"))
+        dataset = create_phonemes_ctc_labels(dataset, config.data.vocab_file)
+    if "tokenizer_path" in config["data"] and config.data.tokenizer_path is not None:
+        tokenizer = AutoTokenizer.from_pretrained(config.data.tokenizer_path, add_bos_token=False, add_eos_token=False)
+        dataset = create_llm_labels(dataset, tokenizer, config.data.prompt)
+
+
+trainer = Trainer(config, dataset=dataset, extra_model_kwargs=extra_model_kwargs, metric_fns={"A": probe, "A-WER": assisted_wer})
+
+
+
+
+
+def wer(model, model_inputs, unused_inputs, outputs, **kwargs):
+    prompt_ids = model_inputs["input_ids"][torch.logical_and(model_inputs["targets"] == -100, model_inputs["input_ids"] != tokenizer.unk_token_id)]
+    if len(prompt_ids.size()) == 1:
+        prompt_ids = prompt_ids.unsqueeze(0)
+    attention_mask = torch.ones_like(prompt_ids)
+    model_inputs.update({
+        "input_ids": prompt_ids,
+        "attention_mask": attention_mask,
+    })
+    model_inputs.pop("targets")
+    beams = kwargs["n_beams"]
+    if beams > 1:
+        gen_config = {
+            "max_new_tokens": 20, 
+            "do_sample": False, #"temperature": 1.0,  "top_p": 0.6, "top_k": 40, 
+            "num_beams": beams, 
+            "num_beam_groups": beams, "diversity_penalty": 1.2,
+            "repetition_penalty": 1.0, "length_penalty": 1.0, "no_repeat_ngram_size": 2, 
+            "renormalize_logits": True, 
+            "low_memory": True,
+            "num_return_sequences": beams, "output_scores": True, "return_dict_in_generate": True,
+            "pad_token_id": tokenizer.unk_token_id,
+        }
+    else:
+        gen_config = {
+            "max_new_tokens": 20, 
+            "do_sample": False,
+            "low_memory": True,
+            "pad_token_id": tokenizer.unk_token_id,
+        }
+    preds = model.generate(**model_inputs, **gen_config)
+    if beams > 1:
+        pred = preds.sequences[0]
+    else:
+        pred = preds[0]
+    pred_sentence = tokenizer.decode(pred, skip_special_tokens=True).strip()
+    target_sentence = unused_inputs["sentence"][0]
+    errors, n_words = word_error_count(pred_sentence, target_sentence)
+    print("-" + pred_sentence + "-", "\n#####\n")
+    print("-" + target_sentence + "-", "\n#####\n\n ")
+    all_preds.append((preds, target_sentence))
+    return torch.tensor(errors/n_words)
+
+
+
+metric_fns = {"A": probe, "WER": wer}
+trainer.metric_fns = metric_fns
+trainer.config["method"]["metric_kwargs"]["n_beams"] = 10
+trainer.metric_kwargs = trainer.config.method.metric_kwargs
+all_preds = []
+trainer.evaluate(eval_train_set=False)
 
 
 

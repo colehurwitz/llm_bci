@@ -153,7 +153,7 @@ class Trainer():
 
         self.print_v(self.model)
         self.print_v(f"Model number of trainable parameters: {sum(p.numel() for p in self.model.parameters() if p.requires_grad):,}", verbosity=0)
-        if getattr(self.model, "llm", None) is not None and self.accelerator.is_main_process and 0 >= self.verbosity:
+        if getattr(self.model, "llm", None) is not None and getattr(self.model.llm, "print_trainable_parameters", None) is not None and self.accelerator.is_main_process and 0 >= self.verbosity:
             self.model.llm.print_trainable_parameters()
 
     """ Get the used columns of the dataset
@@ -377,10 +377,10 @@ class Trainer():
                     # Log to tensorboard/wandb
                     if self.accelerator.is_main_process:
                         self.writer.add_scalar("Loss/train",train_avg_loss,global_step)
-                        for k, v in train_avg_metrics.items():
+                        for name, v in train_avg_metrics.items():
                             self.writer.add_scalar(f"{name}/train", v, global_step)
                         self.writer.add_scalar("Loss/test",test_avg_loss,global_step)
-                        for k, v in test_avg_metrics.items():
+                        for name, v in test_avg_metrics.items():
                             self.writer.add_scalar(f"{name}/test", v, global_step)
 
                     # Log to wandb

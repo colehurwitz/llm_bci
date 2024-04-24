@@ -183,7 +183,7 @@ OUTPUTS
 def create_llm_labels(
     dataset:    Dict[str,List[Dict[str,Any]]], 
     tokenizer:  PreTrainedTokenizer,
-    prompt:     Optional[str] = "neural activity:#-> sentence:"
+    prompt:     Optional[str] = "neural activity:#-> sentence:",
 ) -> Dict[str,List[Dict[str,Any]]]:
 
     prompt_tokens_a = tokenizer(prompt.split("#")[0], return_tensors="np")["input_ids"][0]
@@ -192,13 +192,13 @@ def create_llm_labels(
     for split in dataset:
         for i, row in enumerate(dataset[split]):
             dataset[split][i]["input_ids"] = np.concatenate(
-                (prompt_tokens_a, prompt_tokens_b, tokenizer(row["sentence"], return_tensors="np")["input_ids"][0]),
+                (prompt_tokens_a, prompt_tokens_b, tokenizer(row["sentence"] + tokenizer.eos_token, return_tensors="np")["input_ids"][0]),
                 axis=0,
             )
             dataset[split][i]["attention_mask"] = np.ones_like(dataset[split][i]["input_ids"])
             dataset[split][i]["input_split"] = np.atleast_1d(prompt_tokens_a.shape[0])
             dataset[split][i]["labels"] = np.concatenate(
-                (np.ones_like(prompt_tokens_a)*(-100), np.ones_like(prompt_tokens_b)*(-100), tokenizer(row["sentence"], return_tensors="np")["input_ids"][0]),
+                (np.ones_like(prompt_tokens_a)*(-100), np.ones_like(prompt_tokens_b)*(-100), tokenizer(row["sentence"] + tokenizer.eos_token, return_tensors="np")["input_ids"][0]),
                 axis=0,
             )
     return dataset

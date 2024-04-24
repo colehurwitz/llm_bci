@@ -115,7 +115,6 @@ method:
 
   metric_kwargs:
     n_print: 1
-    n_beams: 1
 
 optimizer:
   gradient_accumulation_steps: 1

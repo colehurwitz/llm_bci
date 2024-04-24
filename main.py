@@ -80,26 +80,102 @@ def main(args):
 
     # Add BCI metric fns
     if config.method.model_kwargs.method_name == "endtoend":
-        def wer(model, model_inputs, unused_inputs, outputs, **kwargs):
+        def assisted_wer(model, model_inputs, unused_inputs, outputs, **kwargs):
             preds = outputs["preds"].argmax(-1)[:,:-1]
             targets = outputs["targets"][:,1:]
-            pred_sentences = [tokenizer.decode(p[t!=-100]) for t, p  in zip(targets,preds)]
+            pred_sentences = [tokenizer.decode(p[t!=-100], skip_special_tokens=True) for t, p  in zip(targets,preds)]
             target_sentences = unused_inputs["sentence"]
             errors, n_words = word_error_count(pred_sentences, target_sentences)
             return torch.tensor(errors/n_words, device=model_inputs["spikes"].device)
-        metric_fns.update({"WER": wer})
+        metric_fns.update({"A-WER": assisted_wer})
 
-        def eval_wer(model, model_inputs, unused_inputs, outputs, **kwargs):
-            preds = outputs["preds"].argmax(-1)[:,:-1]
-            targets = outputs["targets"][:,1:]
-            pred_sentences = [tokenizer.decode(p[t!=-100]) for t, p  in zip(targets,preds)]
-            target_sentences = unused_inputs["sentence"]
-            errors, n_words = word_error_count(pred_sentences, target_sentences)
-            for i in range(kwargs["n_print"]):
-                print(pred_sentences[i], "\n#####\n ", 
-                    target_sentences[i], "\n#####\n\n ")
-            return torch.tensor(errors/n_words, device=model_inputs["spikes"].device)
-        eval_metric_fns.update({"WER": eval_wer})
+        # def wer(model, model_inputs, unused_inputs, outputs, **kwargs):
+        #     prompt_ids = model_inputs["input_ids"][torch.logical_and(model_inputs["targets"] == -100, model_inputs["input_ids"] != tokenizer.unk_token_id)]
+        #     if len(prompt_ids.size()) == 1:
+        #         prompt_ids = prompt_ids.unsqueeze(0)
+        #     attention_mask = torch.ones_like(prompt_ids)
+        #     model_inputs.update({
+        #         "input_ids": prompt_ids,
+        #         "attention_mask": attention_mask,
+        #     })
+        #     model_inputs.pop("targets")
+        #     beams = kwargs["n_beams"]
+        #     if beams > 1:
+        #         gen_config = {
+        #             "max_new_tokens": 20, 
+        #             "do_sample": False, #"temperature": 1.0,  "top_p": 0.6, "top_k": 40, 
+        #             "num_beams": beams, 
+        #             "num_beam_groups": beams, "diversity_penalty": 1.2,
+        #             "repetition_penalty": 1.0, "length_penalty": 1.0, "no_repeat_ngram_size": 2, 
+        #             "renormalize_logits": True, 
+        #             "low_memory": True,
+        #             "num_return_sequences": beams, "output_scores": True, "return_dict_in_generate": True,
+        #             "pad_token_id": tokenizer.unk_token_id,
+        #         }
+        #     else:
+        #         gen_config = {
+        #             "max_new_tokens": 20, 
+        #             "do_sample": False,
+        #             "low_memory": True,
+        #             "pad_token_id": tokenizer.unk_token_id,
+        #         }
+
+        #     pred = model.generate(**model_inputs, **gen_config)
+        #     if beams > 1:
+        #         pred = pred.sequences[0]
+        #     else:
+        #         pred = pred[0]
+
+        #     pred_sentence = tokenizer.decode(pred, skip_special_tokens=True).strip()
+        #     target_sentence = unused_inputs["sentence"][0]
+        #     errors, n_words = word_error_count(pred_sentence, target_sentence)
+        #     return torch.tensor(errors/n_words)
+        # metric_fns.update({"WER": wer})
+
+        # def eval_wer(model, model_inputs, unused_inputs, outputs, **kwargs):
+        #     prompt_ids = model_inputs["input_ids"][torch.logical_and(model_inputs["targets"] == -100, model_inputs["input_ids"] != tokenizer.unk_token_id)]
+        #     if len(prompt_ids.size()) == 1:
+        #         prompt_ids = prompt_ids.unsqueeze(0)
+        #     attention_mask = torch.ones_like(prompt_ids)
+        #     model_inputs.update({
+        #         "input_ids": prompt_ids,
+        #         "attention_mask": attention_mask,
+        #     })
+        #     model_inputs.pop("targets")
+        #     beams = kwargs["n_beams"]
+        #     if beams > 1:
+        #         gen_config = {
+        #             "max_new_tokens": 20, 
+        #             "do_sample": False, #"temperature": 1.0,  "top_p": 0.6, "top_k": 40, 
+        #             "num_beams": beams, 
+        #             "num_beam_groups": beams, "diversity_penalty": 1.2,
+        #             "repetition_penalty": 1.0, "length_penalty": 1.0, "no_repeat_ngram_size": 2, 
+        #             "renormalize_logits": True, 
+        #             "low_memory": True,
+        #             "num_return_sequences": beams, "output_scores": True, "return_dict_in_generate": True,
+        #             "pad_token_id": tokenizer.unk_token_id,
+        #         }
+        #     else:
+        #         gen_config = {
+        #             "max_new_tokens": 20, 
+        #             "do_sample": False,
+        #             "low_memory": True,
+        #             "pad_token_id": tokenizer.unk_token_id,
+        #         }
+                
+        #     pred = model.generate(**model_inputs, **gen_config)
+        #     if beams > 1:
+        #         pred = pred.sequences[0]
+        #     else:
+        #         pred = pred[0]
+            
+        #     pred_sentence = tokenizer.decode(pred, skip_special_tokens=True).strip()
+        #     target_sentence = unused_inputs["sentence"][0]
+        #     errors, n_words = word_error_count(pred_sentence, target_sentence)
+        #     print(pred_sentence, "\n#####\n")
+        #     print(target_sentence, "\n#####\n\n ")
+        #     return torch.tensor(errors/n_words)
+        # eval_metric_fns.update({"WER": eval_wer})
 
     # Get regions for region embeddings
     if config.model.model_class == "iTransformer" and config.model.encoder.embed_region:

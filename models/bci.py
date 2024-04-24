@@ -43,6 +43,8 @@ class BCI(nn.Module):
 
         config = update_config(DEFAULT_CONFIG, config)
         
+        pt_path = dict(config).pop("from_pt", None)
+
         if "llm" in kwargs:
             llm = kwargs["llm"]
         else:
@@ -50,9 +52,9 @@ class BCI(nn.Module):
                 llm_config = LlamaConfig(num_hidden_layers=2, hidden_size=32, intermediate_size=32,  num_attention_heads=4)
                 llm = AutoModelForCausalLM.from_config(llm_config)
             else:
-                llm = AutoModelForCausalLM.from_pretrained(llm_path) 
+                llm = AutoModelForCausalLM.from_pretrained(pt_path or llm_path) 
 
-            if lora is not None:
+            if lora is not None and pt_path is None:
                 lora = DictConfig(lora)
                 peft_config = LoraConfig(
                     inference_mode=False, r=lora.r, lora_alpha=lora.alpha, lora_dropout=lora.dropout,
@@ -70,7 +72,7 @@ class BCI(nn.Module):
         self.llm_config = llm.config
 
         # Build encoder
-        ndt1_pt_path = kwargs.pop("load_ndt1_from_pt", None)
+        ndt1_pt_path = pt_path or kwargs.pop("load_ndt1_from_pt", None)
         if ndt1_pt_path is not None:
             config["ndt1"]["encoder"]["from_pt"] = ndt1_pt_path
             config["ndt1"]["decoder"]["from_pt"] = ndt1_pt_path
@@ -78,9 +80,8 @@ class BCI(nn.Module):
 
 
         # Build projector
-        projector_pt_path = config["projector"].pop("from_pt", None)
-        if projector_pt_path is not None:
-            projector_config = torch.load(os.path.join(projector_pt_path, "projector_config.pth"))
+        if pt_path is not None:
+            projector_config = torch.load(os.path.join(pt_path, "projector_config.pth"))
             config["projector"] = update_config(config.projector, projector_config)
 
         self.stacking = config.projector.stacking
@@ -94,8 +95,8 @@ class BCI(nn.Module):
             self.projector = nn.Linear(config.ndt1.encoder.transformer.hidden_size * self.stacking, llm.config.hidden_size, bias=config.projector.bias)
 
         # Load encoder weights
-        if projector_pt_path is not None:
-            self.projector.load_state_dict(torch.load(os.path.join(encoder_pt_path,"projector.bin")))
+        if pt_path is not None:
+            self.projector.load_state_dict(torch.load(os.path.join(pt_path,"projector.bin")))
 
         self.loss_fn = nn.CrossEntropyLoss(reduction="sum")
 
@@ -222,7 +223,7 @@ class BCI(nn.Module):
         self,
         input_ids:          torch.LongTensor,                   # (batch_size, seq_len)
         attention_mask:     torch.LongTensor,                   # (batch_size, seq_len)
-        inputt_split:       torch.LongTensor,                   # (bs)
+        input_split:       torch.LongTensor,                   # (bs)
         spikes:             torch.FloatTensor,                  # (batch_size, seq_len_spikes, n_channels)
         spikes_mask:        torch.LongTensor,                   # (batch_size, seq_len_spikes)
         spikes_timestamp:   torch.LongTensor,                   # (batch_size, seq_len_spikes)
@@ -246,7 +247,16 @@ class BCI(nn.Module):
     def save_checkpoint(self, save_dir):
         # Save llm 
         self.llm.save_pretrained(save_dir)
+        # Save ndt1
         self.ndt1.save_checkpoint(save_dir)
+
+        # Save projector
         torch.save(self.projector.state_dict(), os.path.join(save_dir,"projector.bin"))
         torch.save(dict(self.config.projector), os.path.join(save_dir,"projector_config.pth"))
+
+    def load_checkpoint(self, load_dir):
+        # Save llm 
+        self.llm = AutoModelForCausalLM.from_pretrained(load_dir).to(self.llm.device)
+        self.ndt1.load_checkpoint(load_dir)
+        self.projector.load_state_dict(torch.load(os.path.join(load_dir,"projector.bin")))
 

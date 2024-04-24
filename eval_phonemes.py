@@ -86,7 +86,14 @@ def main(args):
 
     config = DictConfig(torch.load(os.path.join(from_pt, "trainer_config.pth")))
     if iaifi:
-        config = update_config(config, "configs/iaifi_dirs.yaml")
+        iaifi_dirs = update_config("configs/iaifi_dirs.yaml")
+        config["dirs"]["checkpoint_dir"] = iaifi_dirs.checkpoint_dir
+        config["dirs"]["log_dir"] = iaifi_dirs.log_dir
+        config["data"]["data_dir"] = iaifi_dirs.data_dir
+        config["data"]["tokenizer_dir"] = iaifi_dirs.tokenizer_dir
+        config["method"]["model_kwargs"]["llm_path"] = iaifi_dirs.llm_path
+
+
 
     config["model"]["from_pt"] = from_pt
     config["training"]["test_batch_size"] = 1

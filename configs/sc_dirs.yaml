@@ -1,5 +1,0 @@
-data_dir: /home/gridsan/dbeneto/MAML-Soljacic_shared/BCI/data
-llm_dir: /home/gridsan/dbeneto/MAML-Soljacic_shared/llama2/7B-hf
-tokenizer_dir: /home/gridsan/dbeneto/MAML-Soljacic_shared/llama2/tokenizer
-checkpoint_dir: /home/gridsan/dbeneto/TFG/BCI/checkpoints
-log_dir: /home/gridsan/dbeneto/TFG/BCI/logs

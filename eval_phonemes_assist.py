@@ -51,7 +51,6 @@ def main(args):
             print("-" + target_sentences[i] + "-", "\n#####\n\n ")
         return torch.tensor(errors/n_words, device=model_inputs["spikes"].device)
 
-
     config = DictConfig(torch.load(os.path.join(from_pt, "trainer_config.pth")))
     if iaifi:
         iaifi_dirs = update_config("configs/iaifi_dirs.yaml")
@@ -60,7 +59,6 @@ def main(args):
         config["data"]["data_dir"] = iaifi_dirs.data_dir
         config["data"]["tokenizer_path"] = iaifi_dirs.tokenizer_path
         config["method"]["model_kwargs"]["llm_path"] = iaifi_dirs.llm_path
-
 
 
     config["model"]["from_pt"] = from_pt
@@ -86,7 +84,7 @@ def main(args):
     config["method"]["metric_kwargs"]["n_beams"] = beams
     trainer = Trainer(config, dataset=dataset, metric_fns={"A-WER": assisted_wer})
     all_preds = []
-    trainer.evaluate(eval_train_set=False)
+    print(trainer.evaluate(eval_train_set=False))
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()

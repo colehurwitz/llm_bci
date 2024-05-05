@@ -12,8 +12,8 @@ from importlib import reload as rl
 from utils.config_utils import config_from_kwargs, update_config, DictConfig, ParseKwargs
 
 import utils
-import utils.eval_utils
-from utils.eval_utils import format_ctc, word_error_count
+import utils.eval_bci
+from utils.eval_bci import format_ctc, word_error_count
 
 from peft import LoraConfig, get_peft_model
 from transformers import AutoModelForCausalLM, LlamaConfig, AutoTokenizer
@@ -102,19 +102,12 @@ def main(args):
     config["method"]["metric_kwargs"]["n_beams"] = beams
 
     # Load dataset
-    if config.data.data_load == "file":
-        dataset = torch.load(os.path.join(config.data.data_dir, config.data.data_file))
-    elif config.data.data_load == "ibl":
-        dataset = load_ibl_dataset(**config.data)
-    elif config.data.data_load == "speechbci":
-        dataset = load_competition_data(**config.data)
-        if "vocab_file" in config["data"] and config.data.vocab_file is not None:
-            blank_id = config.method.model_kwargs.blank_id
-            vocab = json.load(open(config.data.vocab_file,"r"))
-            dataset = create_phonemes_ctc_labels(dataset, config.data.vocab_file)
-        if "tokenizer_path" in config["data"] and config.data.tokenizer_path is not None:
-            tokenizer = AutoTokenizer.from_pretrained(config.data.tokenizer_path, add_bos_token=False, add_eos_token=False)
-            dataset = create_llm_labels(dataset, tokenizer, config.data.prompt)
+    dataset = load_competition_data(**config.data)
+    blank_id = config.method.model_kwargs.blank_id
+    vocab = json.load(open(config.data.vocab_file,"r"))
+    dataset = create_phonemes_ctc_labels(dataset, config.data.vocab_file)
+    tokenizer = AutoTokenizer.from_pretrained(config.data.tokenizer_path, add_bos_token=False, add_eos_token=False)
+    dataset = create_llm_labels(dataset, tokenizer, config.data.prompt)
 
 
     trainer = Trainer(config, dataset=dataset, metric_fns={"WER": wer})
@@ -131,32 +124,63 @@ if __name__ == "__main__":
 
 
 
-import torch
-import numpy as np
-from transformers import AutoModelForCausalLM, LlamaConfig, AutoTokenizer
-from utils.eval_utils import word_error_count
-
-a = torch.load("/home/gridsan/dbeneto/TFG/BCI/seed_1-freeze-opt_8_1.e-4-beams_1_dec.pth")
-tokenizer = AutoTokenizer.from_pretrained("/home/gridsan/dbeneto/MAML-Soljacic_shared/llama2/tokenizer")
-
-words = []
-errors = []
-for row in a:
-    pred = tokenizer.batch_decode(row[0],skip_special_tokens=True)[0].strip()
-    sentence = row[1]
-    new_errors, new_words = word_error_count(pred, sentence)
-    words.append(new_words)
-    errors.append(new_errors)
+# import torch
+# import numpy as np
+# from transformers import AutoModelForCausalLM, LlamaConfig, AutoTokenizer
+# from utils.eval_utils import word_error_count
 
 
-words = np.array(words)
-errors = np.array(errors)
-n_resamples = 10000
-resampled_wer = np.zeros([n_resamples,])
-for i in range(n_resamples):
-    resample_idx = np.random.randint(0, words.shape[0], [words.shape[0]])
-    resampled_wer[i] = np.sum(errors[resample_idx]) / np.sum(words[resample_idx])
+# a = torch.load("/home/gridsan/dbeneto/TFG/BCI/seed_1-freeze-opt_8_1.e-4-beams_25_dec.pth")
+# tokenizer = AutoTokenizer.from_pretrained("/home/gridsan/dbeneto/MAML-Soljacic_shared/llama2/tokenizer")
+
+# chars = []
+# char_errors = []
+# words = []
+# errors = []
+# best_errors = []
+# for row in a:
+#     sentence = row[1]
+#     preds = tokenizer.batch_decode(row[0],skip_special_tokens=True)
+#     all_new_errors = []
+#     for pred in preds:
+#         new_errors, new_words = word_error_count(pred.strip(), sentence)
+#         all_new_errors.append(new_errors)
+#     new_char_errors, new_chars = word_error_count(
+#             " ".join([*preds[0].strip().replace(" ", "")]), 
+#             " ".join([*sentence.strip().replace(" ", "")]), 
+#         )
+#     chars.append(new_chars)
+#     char_errors.append(new_char_errors)
+#     words.append(new_words)
+#     errors.append(all_new_errors[0])
+#     best_errors.append(min(all_new_errors))
+#     if new_char_errors > 0  and (all_new_errors[0]/new_words) /  (new_char_errors/new_chars) > 1.3 :
+#         print(preds[0] + "\n")
+#         print(sentence + "\n\n")
 
 
-wer_CI = np.percentile(resampled_wer, [2.5, 97.5])
-wer_CI
+# chars = np.array(chars)
+# char_errors = np.array(char_errors)
+# words = np.array(words)
+# errors = np.array(errors)
+# best_errors = np.array(best_errors)
+# n_resamples = 10000
+# resampled_cer = np.zeros([n_resamples,])
+# resampled_wer = np.zeros([n_resamples,])
+# resampled_best_wer = np.zeros([n_resamples,])
+# for i in range(n_resamples):
+#     resample_idx = np.random.randint(0, words.shape[0], [words.shape[0]])
+#     resampled_cer[i] = np.sum(char_errors[resample_idx]) / np.sum(chars[resample_idx])
+#     resampled_wer[i] = np.sum(errors[resample_idx]) / np.sum(words[resample_idx])
+#     resampled_best_wer[i] = np.sum(best_errors[resample_idx]) / np.sum(words[resample_idx])
+    
+
+
+# cer_CI = np.percentile(resampled_cer, [2.5, 97.5])
+# wer_CI = np.percentile(resampled_wer, [2.5, 97.5])
+# best_wer_CI = np.percentile(resampled_best_wer, [2.5, 97.5])
+# (cer_CI, wer_CI, best_wer_CI)
+
+
+
+

@@ -8,7 +8,7 @@ import torch
 from transformers import AutoTokenizer
 
 from utils.config_utils import config_from_kwargs, update_config, ParseKwargs, DictConfig
-from utils.eval_utils import format_ctc, word_error_count
+from utils.eval_bci import format_ctc, word_error_count
 from data_utils.speechbci_dataset import load_competition_data, create_phonemes_ctc_labels, create_llm_labels
 from data_utils.ibl_dataset import load_ibl_dataset
 from models.trainer import Trainer, default_trainer_config
@@ -35,6 +35,14 @@ def main(args):
             tokenizer = AutoTokenizer.from_pretrained(config.data.tokenizer_path, add_bos_token=False, add_eos_token=False)
             dataset = create_llm_labels(dataset, tokenizer, config.data.prompt)
 
+    
+    # Get regions for region embeddings
+    if config.model.model_class == "iTransformer" and config.model.encoder.embed_region:
+        all_regions = list(set(str(b) for a in [row["neuron_regions"] for rows in dataset.values() for row in rows] for b in a))
+        config["model"]["encoder"]["regions"] = all_regions
+        for key in config["model"]["masker"].keys():
+            config["model"]["masker"][key]["target_regions"] = all_regions
+            config["model"]["masker"][key]["mask_regions"] = all_regions
 
 
     # Adjust lablels for static behaviour decoding
@@ -177,10 +185,7 @@ def main(args):
         #     return torch.tensor(errors/n_words)
         # eval_metric_fns.update({"WER": eval_wer})
 
-    # Get regions for region embeddings
-    if config.model.model_class == "iTransformer" and config.model.encoder.embed_region:
-        config["model"]["encoder"]["regions"] = list(set(str(b) for a in [row["regions"] for rows in dataset.values() for row in rows] for b in a))
-
+  
 
     # Adjust models based on dataset
     spikes_name = "spikes" if "spikes" in dataset["train"][0] else config.method.dataset_kwargs.spikes_name
@@ -190,10 +195,10 @@ def main(args):
         if config.model.model_class == "PatchTST":
             config["model"]["encoder"]["num_input_channels"] = dataset["train"][0][spikes_name].shape[1]
             p = config.model.encoder.patch_length
-            context = ((max(row[spikes_name].shape[0] for split in ["train","test"] for row in dataset[split]) + p-1) // p) * p
+            context = ((max(row[spikes_name].shape[0] for split in dataset.keys() for row in dataset[split]) + p-1) // p) * p
             config["model"]["encoder"]["context_length"] = context
         else:
-            context = max(row[spikes_name].shape[0] for split in ["train","test"] for row in dataset[split])
+            context = max(row[spikes_name].shape[0] for split in dataset.keys() for row in dataset[split])
             config["model"]["encoder"]["embedder"]["max_n_bins"] = context
         pad_update = DictConfig( {"method": {"dataloader_kwargs": {"pad_dict":
             {

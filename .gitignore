@@ -1,5 +1,6 @@
 # My files
 .gitignore
+*.json
 change_name.py
 plots
 sweep*

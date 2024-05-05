@@ -246,6 +246,7 @@ def pad_collate_fn(
     keys = batch[0].keys()
     pad_keys = pad_dict.keys()
     array_keys = [k for k in keys if isinstance(batch[0][k],np.ndarray) and batch[0][k].dtype.type != np.str_]
+    string_array_keys = [k for k in keys if isinstance(batch[0][k],np.ndarray) and batch[0][k].dtype.type == np.str_]
     assert set(pad_keys).issubset(array_keys), f"Can't pad keys which are not arrays: {set(pad_keys)-set(array_keys)} "
     
     padded_batch = {}
@@ -258,6 +259,8 @@ def pad_collate_fn(
                 value = torch.from_numpy(np.stack([row[key] for row in batch], axis=0))
             else:
                 value = [torch.from_numpy(row[key]) for row in batch]
+        elif key in string_array_keys:
+            value = np.stack([row[key] for row in batch], axis=0)
         else:
             value = [row[key] for row in batch]
 

@@ -46,10 +46,10 @@ class UnivariateTransformer(nn.Module):
         super().__init__()
 
         self.embed_spikes = nn.Sequential(
-                nn.Linear(1,config.hidden_size),
-                ACT2FN[config.activation],
-                nn.Linear(config.hidden_size,config.hidden_size),
-            )
+            nn.Linear(1,config.hidden_size),
+            ACT2FN[config.activation],
+            nn.Linear(config.hidden_size,config.hidden_size),
+        )
 
         self.embed_pos = nn.Embedding(config.max_n_bins, config.hidden_size)   
         self.cls_embed = nn.Embedding(1, config.hidden_size)
@@ -177,8 +177,8 @@ class iTransformerEncoder(nn.Module):
         spikes:             torch.LongTensor,                   # (bs, seq_len, n_channels)
         spikes_timestamp:   Optional[torch.LongTensor]  = None, # (bs, seq_len) 
         spikes_spacestamp:  Optional[torch.LongTensor]  = None, # (bs, n_channels) 
-        regions:            Optional[np.ndarray]        = None, # (bs, n_channels)
-        depths:             Optional[torch.FloatTensor] = None, # (bs, n_channels)
+        neuron_regions:            Optional[np.ndarray]        = None, # (bs, n_channels)
+        neuron_depths:             Optional[torch.FloatTensor] = None, # (bs, n_channels)
     ) -> torch.FloatTensor:   # (batch, n_channels, hidden_size)
         
         if self.mode == "mlp":
@@ -193,12 +193,12 @@ class iTransformerEncoder(nn.Module):
             tokens += channel_embeds                                    # (batch, n_channels, hidden_size)
 
         if self.embed_region:
-            region_indx = torch.stack([torch.tensor([self.region_to_indx[r] for r in row], dtype=torch.int64, device=spikes.device) for row in regions], dim=0)
+            region_indx = torch.stack([torch.tensor([self.region_to_indx[r] for r in row], dtype=torch.int64, device=spikes.device) for row in neuron_regions], dim=0)
             region_embeds = self.region_embeddings(region_indx)        # (batch, n_channels, hidden_size)
             tokens += region_embeds
 
         if self.embed_depth:
-            depth_embeds = self.depth_embeddings(depths.unsqueeze(2))  # (bs, n_channels, hidden_size)
+            depth_embeds = self.depth_embeddings(neuron_depths.unsqueeze(2))  # (bs, n_channels, hidden_size)
             tokens += depth_embeds
 
         # Append cls token at the beginning
@@ -247,7 +247,6 @@ class iTransformer(nn.Module):
 
         # Build decoder
         if self.method == "mlm":
-            assert [m["active"] for m in config.masker.values()], "Can't pretrain with inactive masking"
             n_outputs = config.encoder.embedder.max_n_bins
         elif self.method == "ctc":
             n_outputs = kwargs["vocab_size"] * config.encoder.embedder.max_n_bins
@@ -319,21 +318,20 @@ class iTransformer(nn.Module):
         spikes_lengths:     Optional[torch.LongTensor]  = None, # (bs)
         targets:            Optional[torch.FloatTensor] = None, # (bs, tar_len) 
         targets_lengths:    Optional[torch.LongTensor]  = None, # (bs)
-        regions:            Optional[np.ndarray]        = None, # (bs, n_channels)
-        depths:             Optional[torch.FloatTensor] = None, # (bs, n_channels)
+        neuron_regions:     Optional[np.ndarray]        = None, # (bs, n_channels)
+        neuron_depths:      Optional[torch.FloatTensor] = None, # (bs, n_channels)
     ) -> iTransformerOutput:
 
         if self.method == "mlm":
-            assert targets is None, "No targets needed for mlm"
             targets = spikes.clone()
         
         # Encode neural data. x is the masked embedded spikes. targets_mask is True for masked bins
         targets_mask = torch.zeros_like(spikes, dtype=torch.int64)
         for masker in self.masker.values():
-            spikes, new_mask = masker(spikes)
+            spikes, new_mask = masker(spikes, neuron_regions)
             targets_mask = targets_mask | new_mask
 
-        x = self.encoder(spikes, spikes_timestamp, spikes_spacestamp, regions=regions, depths=depths)    # (batch, n_channels, hidden_size)
+        x = self.encoder(spikes, spikes_timestamp, spikes_spacestamp, neuron_regions=neuron_regions, neuron_depths=neuron_depths)    # (batch, n_channels, hidden_size)
 
         # Select cls token, assumed to be the first one
         if self.use_cls:
@@ -380,6 +378,7 @@ class iTransformer(nn.Module):
                 loss = self.loss_fn(preds, targets.long().squeeze(1)).sum()
             elif self.loss_name == "mse":
                 loss = self.loss_fn(preds.squeeze(1), targets.squeeze(1)).sum()
+            
             n_examples = torch.tensor(len(targets), device=loss.device, dtype=torch.long)
             return iTransformerOutput(
                 loss=loss,

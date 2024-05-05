@@ -32,7 +32,7 @@ from trlx.data.default_configs import (
 
 from utils.data_utils import PhonemesFinetuneDataset, ft_pad_collate_fn, prepare_phonemes_data
 from utils.config_utils import DictConfig, update_config
-from utils.eval_utils import word_error_count
+from utils.eval_bci import word_error_count
 from models.phoneme_llm import PhonemeLLM
 
 from accelerate import Accelerator

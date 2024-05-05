@@ -353,7 +353,7 @@ class Trainer():
                 train_loss.append(self.accelerator.gather(loss).sum().detach().item())
                 train_examples.append(self.accelerator.gather(examples).sum().detach().item())
                 if self.accelerator.is_main_process:
-                    self.writer.add_scalar("Loss/train_iter",train_loss[-1] / train_examples[-1], global_step)
+                    self.writer.add_scalar("Loss/train_iter",(train_loss[-1] / train_examples[-1]) if train_examples[-1] > 0 else 0, global_step)
 
                 # Metrics
                 for name, fn in self.metric_fns.items():

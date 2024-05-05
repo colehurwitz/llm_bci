@@ -519,3 +519,53 @@ for i in range(max_new_bins):
 mse
 
 
+
+
+
+import numpy as np
+import matplotlib.pyplot as plt
+from utils.config_utils import config_from_kwargs, update_config, DictConfig
+from data_utils.speechbci_dataset import load_competition_data, create_phonemes_ctc_labels
+from transformers import AutoTokenizer
+import torch
+from scipy import signal
+
+config = update_config("configs/trainer_bci.yaml")
+config["data"]["zscore_day"] = False
+config["data"]["zscore_block"] = True
+config["data"]["features"] = ["tx1"]
+config["data"]["area_end"] = 256
+gauss = False
+
+dataset = load_competition_data(**config.data)
+if "vocab_file" in config["data"] and config.data.vocab_file is not None:
+    blank_id = config.method.model_kwargs.blank_id
+    vocab = json.load(open(config.data.vocab_file,"r"))
+    dataset = create_phonemes_ctc_labels(dataset, config.data.vocab_file)
+
+
+if "tokenizer_path" in config["data"] and config.data.tokenizer_path is not None:
+    tokenizer = AutoTokenizer.from_pretrained(config.data.tokenizer_path, add_bos_token=False, add_eos_token=False)
+    dataset = create_llm_labels(dataset, tokenizer, config.data.prompt)
+
+
+spikes = dataset["train"][4247]["spikes"][:].T
+N, T = spikes.shape
+
+if gauss:
+    spikes = torch.from_numpy(spikes).unsqueeze(0)
+    kernel = torch.from_numpy(signal.gaussian(1 + 2*6, 2))
+    kernel = kernel / kernel.sum()
+    spikes = F.conv1d(spikes,kernel.unsqueeze(0).unsqueeze(0).expand(N,1,kernel.size(0)).to(spikes.dtype), padding="same", groups=N)
+    spikes = spikes[0].numpy()
+
+# Creating the plot
+plt.clf()
+plt.figure(figsize=(10, 5))  # Set the figure size as needed
+plt.imshow(spikes, aspect='auto', cmap='gray_r', interpolation='none')
+plt.colorbar()  # Optional, to show the color scale
+plt.ylabel(f"N = {N} electrodes")
+plt.xlabel(f"T = {T} timebins")
+plt.savefig("plot.png")
+
+[(i,row["sentence"]) for i,row in enumerate(dataset["train"]) if "learn" in row["sentence"]]

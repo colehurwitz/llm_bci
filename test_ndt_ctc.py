@@ -11,8 +11,8 @@ from importlib import reload as rl
 from utils.config_utils import config_from_kwargs, update_config, DictConfig
 
 import utils
-import utils.eval_utils
-from utils.eval_utils import format_ctc, word_error_count
+import utils.eval_bci
+from utils.eval_bci import format_ctc, word_error_count
 
 import transformers
 import transformers.models
@@ -32,8 +32,8 @@ from models.trainer import Trainer, default_trainer_config
 
 
 rl(utils)
-rl(utils.eval_utils)
-from utils.eval_utils import *
+rl(utils.eval_bci)
+from utils.eval_bci import *
 
 rl(data_utils)
 rl(data_utils.datasets)
@@ -62,16 +62,6 @@ def probe(model, model_inputs, unused_inputs, outputs, **kwargs):
     return torch.tensor(0.0)
 
 
-def cer(model, model_inputs, unused_inputs, outputs, **kwargs):
-    preds = outputs["preds"].argmax(-1)
-    preds = [" ".join(format_ctc(pred, vocab, blank_id)) for pred in preds]
-    phonemes = [" ".join(p) for p in unused_inputs["phonemes"]]
-    errors, n_phonemes = word_error_count(preds, phonemes)
-    for i in range(kwargs["n_print"]):
-        print(preds[i].replace(" ","").replace("SIL"," SIL "), "\n#####\n ", 
-            phonemes[i].replace(" ","").replace("SIL"," SIL "),"\n#####\n ", 
-            unused_inputs["sentence"][i], "\n#####\n\n ")
-    return torch.tensor(errors/n_phonemes)
 
 kwargs = {
     "savestring": "ndt1_ctc_test",
@@ -192,8 +182,8 @@ trainer.evaluate(eval_train_set=False)
 trainer.train()
 
 
-# config["model"]["encoder"]["from_pt"] = from_pt
-# config["model"]["decoder"]["from_pt"] = from_pt
+config["model"]["encoder"]["from_pt"] = from_pt
+config["model"]["decoder"]["from_pt"] = from_pt
 # config["savestring"] = "mlm_ndt_poisson"
 # config["model"]["encoder"]["context"]["forward"] = -2
 # config["method"]["model_kwargs"]["loss"] = "poisson_nll"
@@ -204,10 +194,81 @@ trainer.train()
 # config["model"]["masker"]["mode"] = "full"
 # config["model"]["masker"]["mode"] = "full"
 
+import json
+def cer(model, model_inputs, unused_inputs, outputs, **kwargs):
+    preds = outputs["preds"].argmax(-1)
+    preds = [" ".join(format_ctc(pred, vocab, blank_id)) for pred in preds]
+    phonemes = [" ".join(p) for p in unused_inputs["phonemes"]]
+    errors, n_phonemes = word_error_count(preds, phonemes)
+    # for i in range(kwargs["n_print"]):
+    #     print(preds[i].replace(" ","").replace("SIL"," SIL "), "\n#####\n ", 
+    #         phonemes[i].replace(" ","").replace("SIL"," SIL "),"\n#####\n ", 
+    #         unused_inputs["sentence"][i], "\n#####\n\n ")
+    all_examples.extend((pred, ph, s) for pred, ph, s in zip(preds, phonemes, unused_inputs["sentence"]))
+    return torch.tensor(errors/n_phonemes)
 
-from_pt = "pt_checkpoints/ndt1-ctc-opt_64_1.e-3_5.e-5-nl_5-hs_1024-is_1024-d_0.4_0.2-noise_true-context_false_false_false/STEP12200"
+from_pt = "/home/gridsan/dbeneto/TFG/BCI/pt_checkpoints/ndt1/ndt1-ctc-seed_2-opt_64_1.e-3_5.e-5-arch_5_1024_1024-d_0.4_0.2-noise_true-smooth_2-context_-2_false_false_false-ds-decoding_true_true-stack_32_4/STEP9400"
 config = DictConfig(torch.load(os.path.join(from_pt, "trainer_config.pth")))
+config["model"]["encoder"]["from_pt"] = from_pt
+config["model"]["decoder"]["from_pt"] = from_pt
+
+dataset = load_competition_data(**config.data)
+blank_id = config.method.model_kwargs.blank_id
+vocab = json.load(open(config.data.vocab_file,"r"))
+dataset = create_phonemes_ctc_labels(dataset, config.data.vocab_file)
+
+
+trainer = Trainer(config, dataset=dataset, metric_fns={"CER": cer})
 trainer.model.load_checkpoint(from_pt)
+trainer.model.encoder
+all_examples = []
+trainer.evaluate(eval_train_set=False)
+
+json.dump(all_examples, open("best_per_test.json","w"))
+
+
+import json
+import numpy 
+from utils.eval_bci import word_error_count
+all_examples = json.load(open("best_per_test.json","r"))
+for ex in all_examples:
+    errors, phonemes = word_error_count(ex[0],ex[1])
+    ex.append(errors)
+    ex.append(phonemes)
+
+
+all_errors = np.array([ex[3] for ex in all_examples])
+all_phonemes = np.array([ex[4] for ex in all_examples])
+n_resamples = 10000
+resampled_cer = np.zeros([n_resamples,])
+for i in range(n_resamples):
+    resample_idx = np.random.randint(0, all_errors.shape[0], [all_errors.shape[0]])
+    resampled_cer[i] = np.sum(all_errors[resample_idx]) / np.sum(all_phonemes[resample_idx])
+cer_CI = np.percentile(resampled_cer, [2.5, 97.5])
+cer_CI
+
+
+
+all_examples.sort(key = lambda ex:ex[3]/ex[4])
+
+0-error: 37, 24, 20, 40, 34
+0-10-error: 196, 74, 61, 158, 88
+10-20-error: 280, 279, 442, 331, 348
+
+margin = ">10\\% <20\\%"
+for i in [280, 279, 442, 331, 348]:
+    ex = all_examples[i]
+    print(ex[0].replace(" ", "").replace("SIL"," ").strip().lower() + " & " + ex[1].replace(" ", "").replace("SIL"," ").strip().lower() + " & "+ ex[2] +" & " + margin + r"\\" + "\n" + "\\hline")
+
+
+
+cer_CI_test = 20.6 - 22.4
+
+
+
+
+
+
 
 
 

@@ -1,6 +1,6 @@
 seed: 1
 
-savestring: test
+savestring: test_itransformer_wheel
 wandb_project: test
 log_to_wandb: false
 
@@ -8,18 +8,18 @@ verbosity: 0
 
 # Logging directories
 dirs:
-  checkpoint_dir: /home/gridsan/dbeneto/TFG/BCI/pt_checkpoints  # save model state dicts (todo optimizer states)
-  log_dir: /home/gridsan/dbeneto/TFG/BCI/pt_logs  # save tensorboard logs
+  checkpoint_dir: /home/gridsan/dbeneto/TFG/BCI/pt_checkpoints/itransformer/wheel  # save model state dicts (todo optimizer states)
+  log_dir: /home/gridsan/dbeneto/TFG/BCI/pt_logs/itransformer/wheel  # save tensorboard logs
 
 
 # Training configuration
 training:
-  num_epochs: 100
+  num_epochs: 300
   train_batch_size: 16
   test_batch_size: 16   
-  shuffle_test_dataloader: false      # Shuffle test dataloader between epochs
-  drop_last_test_dataloader: true     # Drop last batch of test dataloader to ensure same batch size
-  drop_last_train_dataloader: true    # Drop last batch to ensure same batch size
+  shuffle_test_dataloader: false    # Shuffle test dataloader between epochs
+  drop_last_test_dataloader: false   # Drop last batch of test dataloader to ensure same batch size
+  drop_last_train_dataloader: false   # Drop last batch to ensure same batch size
 
   save_every: 100 # Save checkpoint
   eval_every: 100  # Eval model
@@ -35,36 +35,29 @@ data:
   json_dataset_name: null
   
   train_name: train   # name of the train split in the raw datasete
-  test_name: test     # name of the test split in the raw datasete
+  test_name: val     # name of the test split in the raw datasete
   train_len: null     # used length of the train dataset. null to use all
   test_len: null      # used length of the test dataset. null to use all
 
   data_load: ibl # ibl/file/speechbci
-  data_dir: /home/gridsan/dbeneto/MAML-Soljacic_shared/BCI/data
 
-  data_file: null
-
-  eid: 671c7ea7-6726-4fbe-adeb-f89c2c8e489b/stimulus_20ms
-  test_size: 0.15
-  static_behaviours: ["block","choice","reward"]
-  dynamic_behaviours: []
+  eid: 671c7ea7-6726-4fbe-adeb-f89c2c8e489b_aligned
+  test_size: null
+  static_behaviours: []
+  dynamic_behaviours: ["wheel-speed"]
   norm_behaviours: false
   seed: 42
 
-  zscore: false
-  features: ["tx1"]
-  date_idxs: null
+  data_dir: /home/gridsan/dbeneto/MAML-Soljacic_shared/BCI/data/IBL
+
   
 method:
 
   model_kwargs:
-    method_name: stat_behaviour
+    method_name: dyn_behaviour
 
-    loss: xent # xent/mse
-    n_labels: 2
-
-  dataset_kwargs: 
-    targets_name: choice
+  dataset_kwargs:
+    targets_name: wheel-speed
 
 
   dataloader_kwargs:
@@ -93,6 +86,7 @@ method:
         value: 0
         truncate: null
         min_length: null
+
 
   metric_kwargs: {}
 

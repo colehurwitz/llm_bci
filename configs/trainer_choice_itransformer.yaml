@@ -1,6 +1,6 @@
 seed: 1
 
-savestring: test_itransformer_ssl
+savestring: test_itransformer_choice
 wandb_project: test
 log_to_wandb: false
 
@@ -8,8 +8,8 @@ verbosity: 0
 
 # Logging directories
 dirs:
-  checkpoint_dir: /home/gridsan/dbeneto/TFG/BCI/pt_checkpoints/itransformer/ssl  # save model state dicts (todo optimizer states)
-  log_dir: /home/gridsan/dbeneto/TFG/BCI/pt_logs/itransformer/ssl  # save tensorboard logs
+  checkpoint_dir: /home/gridsan/dbeneto/TFG/BCI/pt_checkpoints/itransformer/choice  # save model state dicts (todo optimizer states)
+  log_dir: /home/gridsan/dbeneto/TFG/BCI/pt_logs/itransformer/choice  # save tensorboard logs
 
 
 # Training configuration
@@ -29,7 +29,7 @@ training:
 model: include:configs/itransformer.yaml
 
 data:
-  dataset_class: base
+  dataset_class: decoding
 
   hf_dataset_name: null
   json_dataset_name: null
@@ -43,7 +43,7 @@ data:
 
   eid: 671c7ea7-6726-4fbe-adeb-f89c2c8e489b_aligned
   test_size: null
-  static_behaviours: []
+  static_behaviours: ["choice"]
   dynamic_behaviours: []
   norm_behaviours: false
   seed: 42
@@ -54,12 +54,11 @@ data:
 method:
 
   model_kwargs:
-    method_name: mlm
+    method_name: stat_behaviour
+    loss: xent
 
-    log_input: true
-    loss: poisson_nll # poisson_nll/mse(todo)
-
-  dataset_kwargs: {}
+  dataset_kwargs:
+    targets_name: choice
 
 
   dataloader_kwargs:

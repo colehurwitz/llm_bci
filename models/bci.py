@@ -187,6 +187,7 @@ class BCI(nn.Module):
         inputs_embeds, attention_mask, targets = self.prepare_embeds(input_ids, attention_mask, input_split, spikes,
                                         spikes_mask, spikes_timestamp, spikes_lengths, block_idx, day_idx, targets)
         
+        inputs_embeds = inputs_embeds.to(self.llm.dtype)
         # Forward decoder
         logits = self.llm(  
             inputs_embeds=inputs_embeds,
@@ -241,6 +242,7 @@ class BCI(nn.Module):
                                         spikes_mask, spikes_timestamp, spikes_lengths, block_idx, day_idx, targets=None)
         
         # LLM built-in generation
+        inputs_embeds = inputs_embeds.to(self.llm.dtype)
         return self.llm.generate(inputs_embeds=inputs_embeds, attention_mask=attention_mask, **gen_config)
 
 

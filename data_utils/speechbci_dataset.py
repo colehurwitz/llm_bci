@@ -53,6 +53,7 @@ def load_competition_data(
     """
     def get_split_dict(split_dir, zscore_block, features, area_start, area_end):
         all_files = glob(os.path.join(split_dir,"*"))
+        all_files.sort(key=lambda file: tuple(file.split("/")[-1].split(".")[1:4]))
         print(all_files)
         x = []
         y = []

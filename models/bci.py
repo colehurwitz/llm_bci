@@ -68,6 +68,7 @@ class BCI(nn.Module):
 
 
         # Set LLM
+        llm.to(torch.float16)
         self.llm = llm
         self.llm_config = llm.config
 

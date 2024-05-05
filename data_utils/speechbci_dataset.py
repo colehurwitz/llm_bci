@@ -53,6 +53,7 @@ def load_competition_data(
     """
     def get_split_dict(split_dir, zscore_block, features, area_start, area_end):
         all_files = glob(os.path.join(split_dir,"*"))
+        print(all_files)
         x = []
         y = []
         b = []

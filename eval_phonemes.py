@@ -81,7 +81,7 @@ def main(args):
         print("-" + pred_sentence + "-", "\n#####\n")
         print("-" + target_sentence + "-", "\n#####\n\n ")
         all_preds.append((preds, target_sentence))
-        torch.save(all_preds, f"{savestring}_dec.pth")
+        torch.save(all_preds, f"{savestring}.pth")
         return torch.tensor(errors/n_words)
 
 

@@ -104,7 +104,7 @@ def main(args):
     # Load dataset
     dataset = load_competition_data(**config.data)
     blank_id = config.method.model_kwargs.blank_id
-    vocab = json.load(open(config.data.vocab_file,"r"))
+    # vocab = json.load(open(config.data.vocab_file,"r"))
     # dataset = create_phonemes_ctc_labels(dataset, config.data.vocab_file)
     tokenizer = AutoTokenizer.from_pretrained(config.data.tokenizer_path, add_bos_token=False, add_eos_token=False)
     dataset = create_llm_labels(dataset, tokenizer, config.data.prompt)

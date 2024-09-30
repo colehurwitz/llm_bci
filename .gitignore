@@ -20,6 +20,8 @@ eval_pretrain.py
 wandb
 patchtst.ipynb
 iaifi_dirs.yaml
+test_*
+todo*
 
 # Byte-compiled / optimized / DLL files
 __pycache__/

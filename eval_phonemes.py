@@ -124,63 +124,137 @@ if __name__ == "__main__":
 
 
 
-# import torch
-# import numpy as np
-# from transformers import AutoModelForCausalLM, LlamaConfig, AutoTokenizer
-# from utils.eval_utils import word_error_count
 
+import torch
+import numpy as np
+from transformers import AutoModelForCausalLM, LlamaConfig, AutoTokenizer
+from utils.eval_bci import word_error_count
+import matplotlib.pyplot as plt
 
-# a = torch.load("/home/gridsan/dbeneto/TFG/BCI/seed_1-freeze-opt_8_1.e-4-beams_25_dec.pth")
-# tokenizer = AutoTokenizer.from_pretrained("/home/gridsan/dbeneto/MAML-Soljacic_shared/llama2/tokenizer")
-
-# chars = []
-# char_errors = []
-# words = []
-# errors = []
-# best_errors = []
-# for row in a:
-#     sentence = row[1]
-#     preds = tokenizer.batch_decode(row[0],skip_special_tokens=True)
-#     all_new_errors = []
-#     for pred in preds:
-#         new_errors, new_words = word_error_count(pred.strip(), sentence)
-#         all_new_errors.append(new_errors)
-#     new_char_errors, new_chars = word_error_count(
-#             " ".join([*preds[0].strip().replace(" ", "")]), 
-#             " ".join([*sentence.strip().replace(" ", "")]), 
-#         )
-#     chars.append(new_chars)
-#     char_errors.append(new_char_errors)
-#     words.append(new_words)
-#     errors.append(all_new_errors[0])
-#     best_errors.append(min(all_new_errors))
-#     if new_char_errors > 0  and (all_new_errors[0]/new_words) /  (new_char_errors/new_chars) > 1.3 :
-#         print(preds[0] + "\n")
-#         print(sentence + "\n\n")
-
-
-# chars = np.array(chars)
-# char_errors = np.array(char_errors)
-# words = np.array(words)
-# errors = np.array(errors)
-# best_errors = np.array(best_errors)
-# n_resamples = 10000
-# resampled_cer = np.zeros([n_resamples,])
-# resampled_wer = np.zeros([n_resamples,])
-# resampled_best_wer = np.zeros([n_resamples,])
-# for i in range(n_resamples):
-#     resample_idx = np.random.randint(0, words.shape[0], [words.shape[0]])
-#     resampled_cer[i] = np.sum(char_errors[resample_idx]) / np.sum(chars[resample_idx])
-#     resampled_wer[i] = np.sum(errors[resample_idx]) / np.sum(words[resample_idx])
-#     resampled_best_wer[i] = np.sum(best_errors[resample_idx]) / np.sum(words[resample_idx])
-    
-
-
-# cer_CI = np.percentile(resampled_cer, [2.5, 97.5])
-# wer_CI = np.percentile(resampled_wer, [2.5, 97.5])
-# best_wer_CI = np.percentile(resampled_best_wer, [2.5, 97.5])
-# (cer_CI, wer_CI, best_wer_CI)
+tokenizer = AutoTokenizer.from_pretrained("/home/gridsan/dbeneto/MAML-Soljacic_shared/llama2/tokenizer")
 
 
 
+################### COMPUTE STATISTICS #############################################
 
+all_data = {"lora": {}, "freeze": {}}
+for beams in [1,3,5,10,25,50]:
+    for name in ["lora","freeze"]:
+        a = torch.load(f"/home/gridsan/dbeneto/TFG/BCI/plots/bci/{name}_{beams}.pth")
+        words = []
+        errors = []
+        best_errors = []
+        for row in a:
+            sentence = row[1]
+            preds = tokenizer.batch_decode(row[0],skip_special_tokens=True)
+            all_new_errors = []
+            for pred in preds:
+                new_errors, new_words = word_error_count(pred.strip(), sentence)
+                all_new_errors.append(new_errors)
+            words.append(new_words)
+            errors.append(all_new_errors[0])
+            best_errors.append(min(all_new_errors))
+        words = np.array(words)
+        errors = np.array(errors)
+        best_errors = np.array(best_errors)
+        n_resamples = 10000
+        resampled_wer = np.zeros([n_resamples,])
+        resampled_best_wer = np.zeros([n_resamples,])
+        for i in range(n_resamples):
+            resample_idx = np.random.randint(0, words.shape[0], [words.shape[0]])
+            resampled_wer[i] = np.sum(errors[resample_idx]) / np.sum(words[resample_idx])
+            resampled_best_wer[i] = np.sum(best_errors[resample_idx]) / np.sum(words[resample_idx])
+        all_data[name][beams] = (resampled_wer, resampled_best_wer)
+        
+
+
+
+###### WER #######################################################
+
+labels = ["1", "3","5","10","25","50"]
+plt.clf()
+x = np.arange(len(labels))  # Create an array for the x-axis
+bar_width = 0.35  # Width of each bar
+plt.figure(figsize=(10, 6))
+plt.bar(
+    x - bar_width/2, 
+    [100*row[0].mean() for row in all_data["lora"].values()], 
+    yerr=[[100*(row[0].mean() - np.percentile(row[0], [2.5, 97.5])[0]) for row in all_data["lora"].values()], [100*(np.percentile(row[0], [2.5, 97.5])[1]-row[0].mean()) for row in all_data["lora"].values()]],
+    width=bar_width, label="Finetune LLM", color='lightgreen'
+) 
+
+plt.bar(
+    x + bar_width/2, 
+    [100*row[0].mean() for row in all_data["freeze"].values()], 
+    yerr=[[100*(row[0].mean()-np.percentile(row[0], [2.5, 97.5])[0]) for row in all_data["freeze"].values()], [100*(np.percentile(row[0], [2.5, 97.5])[1]-row[0].mean()) for row in all_data["freeze"].values()]],
+    width=bar_width, label="Freeze LLM", color='lightblue'
+) 
+plt.xlabel(r"Beam size", fontsize=15)
+plt.xticks(x, labels, fontsize=15) 
+plt.ylabel("Word Error Rate (%)", fontsize=15)
+plt.tick_params(axis='y', labelsize=15)
+plt.ylim(20,33.5)
+plt.grid(True)
+plt.minorticks_on() 
+plt.grid(True, which='minor', linestyle='--', linewidth=0.5) 
+plt.legend(loc='upper center',bbox_to_anchor=(0.35, 1), fancybox=True, ncol=1, fontsize=15)
+
+# plt.legend(fontsize=14)
+plt.savefig("plots/bci/wer.png")
+####################################################33
+
+
+
+###### BEST WER #######################################################
+
+labels = ["1", "3","5","10","25","50"]
+plt.clf()
+x = np.arange(len(labels))  # Create an array for the x-axis
+bar_width = 0.35  # Width of each bar
+plt.figure(figsize=(10, 6))
+plt.bar(
+    x - bar_width/2, 
+    [100*row[1].mean() for row in all_data["lora"].values()], 
+    yerr=[[100*(row[1].mean() - np.percentile(row[1], [2.5, 97.5])[0]) for row in all_data["lora"].values()], [100*(np.percentile(row[1], [2.5, 97.5])[1]-row[1].mean()) for row in all_data["lora"].values()]],
+    width=bar_width, label="Finetune LLM", color='lightgreen'
+) 
+
+plt.bar(
+    x + bar_width/2, 
+    [100*row[1].mean() for row in all_data["freeze"].values()], 
+    yerr=[[100*(row[1].mean()-np.percentile(row[1], [2.5, 97.5])[0]) for row in all_data["freeze"].values()], [100*(np.percentile(row[1], [2.5, 97.5])[1]-row[1].mean()) for row in all_data["freeze"].values()]],
+    width=bar_width, label="Freeze LLM", color='lightblue'
+) 
+plt.xlabel(r"Top-$k$", fontsize=15)
+plt.xticks(x, labels, fontsize=15) 
+plt.ylabel("Best Word Error Rate (%)", fontsize=15)
+plt.tick_params(axis='y', labelsize=15)
+plt.yticks(np.arange(10, 35, 5))
+plt.ylim(10,32)
+plt.grid(True)
+plt.minorticks_on() 
+plt.grid(True, which='minor', linestyle='--', linewidth=0.5) 
+plt.legend(loc='upper center',bbox_to_anchor=(0.65, 0.95), fancybox=True, ncol=1, fontsize=15)
+
+# plt.legend(fontsize=14)
+plt.savefig("plots/bci/best_wer.png")
+####################################################33
+
+
+######### EXAMPLE SENTENCES ############3
+
+a = torch.load(f"/home/gridsan/dbeneto/TFG/BCI/plots/bci/lora_5.pth")
+np.percentile(all_data["lora"][5][0], [2.5, 97.5])
+np.mean(all_data["lora"][5][0])
+all_examples = []
+for row in a:
+    sentence = row[1]
+    preds = tokenizer.batch_decode(row[0],skip_special_tokens=True)
+    errors, words = word_error_count(preds[0].strip(), sentence)
+    all_examples.append([preds[0].strip(), sentence, errors, words])
+
+json.dump(all_examples,open("best_wer_test.json","w"))
+
+all_examples = json.load(open("best_wer_test.json","r"))
+all_examples.sort(key = lambda ex:ex[2]/ex[3])
+[i for i, row in enumerate(all_examples) if row[2]/row[3] <= 0]
